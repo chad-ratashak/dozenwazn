@@ -1,0 +1,16 @@
+[project]
+name = "dozenwazn"
+version = "0.1.0"
+description = "Generate and validate all possible Arabic verb forms from trilateral and quadrilateral roots"
+requires-python = ">=3.11"
+dependencies = [
+    "tiktoken",
+    "rich",
+    "arabic-reshaper",
+    "python-bidi",
+    "pydantic",
+    "click",
+    "transformers>=5.5.0",
+    "torch>=2.11.0",
+    "huggingface-hub[cli]>=1.9.0",
+]

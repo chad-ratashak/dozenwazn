@@ -11,7 +11,6 @@ wheels/
 
 # Project-specific
 .port
-*.command
 data/
 .DS_Store
 

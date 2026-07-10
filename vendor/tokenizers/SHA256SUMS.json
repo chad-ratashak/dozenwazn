@@ -6,6 +6,13 @@
     },
     "repo": "aubmindlab/bert-base-arabertv2"
   },
+  "aya101": {
+    "commit": "2eb15465c5dd7f72a8f7984306ad05ebc3dd1e1f",
+    "files": {
+      "spiece.model": "ef78f86560d809067d12bac6c09f19a462cb3af3f54d2b8acbba26e1433125d6"
+    },
+    "repo": "google/mt5-base"
+  },
   "camelbert": {
     "commit": "9be352797bdf28a9ae21e2ae582aaaca7abdb22d",
     "files": {

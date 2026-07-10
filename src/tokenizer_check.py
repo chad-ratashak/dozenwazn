@@ -47,34 +47,65 @@ def strip_tashkeel(text: str) -> str:
 
 
 class VendoredTokenizer:
-    """Token counter backed by vendored data files. Never executes repo code."""
+    """Token counter backed by vendored data files. Never executes repo code.
+
+    __init__ dispatches per backend and sets:
+      self._encode_ids: callable(str) -> list[int]   (no special tokens)
+      self._unk_id: int | None                        (UNK token id, if any)
+    count() is shared across backends and applies the lone-UNK -> None rule.
+
+    Backends:
+      - tokenizer.json  → HF `tokenizers` Tokenizer (BPE/Unigram/WordPiece)
+      - vocab.txt       → BertWordPieceTokenizer (CAMeLBERT)
+      - *.model         → SentencePiece protobuf parsed by the `sentencepiece`
+                          library (Google-maintained) as inert data. Note:
+                          SentencePiece prepends the meta space (▁) during
+                          encoding, so a lone piece is a genuine single token.
+                          mT5's spiece.model has no byte fallback, so a lone
+                          UNK is possible and the None convention applies.
+    """
 
     _UNK_TOKENS = ('[UNK]', '<unk>')
 
     def __init__(self, name: str, directory: Path, files: list[str]):
-        from tokenizers import Tokenizer
-
         self.name = name
+        self._unk_id = None
+
+        sp_models = [f for f in files if f.endswith('.model')]
         if 'tokenizer.json' in files:
-            self._tok = Tokenizer.from_file(str(directory / 'tokenizer.json'))
+            from tokenizers import Tokenizer
+            tok = Tokenizer.from_file(str(directory / 'tokenizer.json'))
+            self._encode_ids = lambda t: tok.encode(t, add_special_tokens=False).ids
+            self._unk_id = self._find_unk_id(tok)
         elif 'vocab.txt' in files:
             # WordPiece vocab without a serialized tokenizer.json (CAMeLBERT).
             # strip_accents=False so tashkeel isn't silently removed.
             from tokenizers.implementations import BertWordPieceTokenizer
-            self._tok = BertWordPieceTokenizer(
+            tok = BertWordPieceTokenizer(
                 str(directory / 'vocab.txt'),
                 lowercase=False,
                 strip_accents=False,
             )
+            self._encode_ids = lambda t: tok.encode(t, add_special_tokens=False).ids
+            self._unk_id = self._find_unk_id(tok)
+        elif sp_models:
+            # SentencePiece model protobuf (e.g. Aya-101 / mT5 spiece.model).
+            # Lazy import: only needed when a .model file is vendored.
+            from sentencepiece import SentencePieceProcessor
+            sp = SentencePieceProcessor(model_file=str(directory / sp_models[0]))
+            self._encode_ids = lambda t: sp.encode(t, out_type=int)
+            unk = sp.unk_id()
+            self._unk_id = unk if unk >= 0 else None
         else:
             raise ValueError(f"{name}: no loadable tokenizer data in {files}")
 
-        self._unk_id = None
-        for unk in self._UNK_TOKENS:
-            tid = self._tok.token_to_id(unk)
+    @classmethod
+    def _find_unk_id(cls, tok) -> int | None:
+        for unk in cls._UNK_TOKENS:
+            tid = tok.token_to_id(unk)
             if tid is not None:
-                self._unk_id = tid
-                break
+                return tid
+        return None
 
     def count(self, text: str) -> int | None:
         """Token count for text, or None if it collapsed to a lone UNK token.
@@ -82,7 +113,7 @@ class VendoredTokenizer:
         A single [UNK] means the tokenizer has no coverage at all — counting
         it as a "single-token hit" would be a false positive.
         """
-        ids = self._tok.encode(text, add_special_tokens=False).ids
+        ids = self._encode_ids(text)
         if self._unk_id is not None and ids == [self._unk_id]:
             return None
         return len(ids)

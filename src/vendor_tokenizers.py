@@ -45,6 +45,16 @@ TOKENIZER_REGISTRY = {
         'label': 'Qwen 2.5 (vocabulary only — see CLAUDE.md data scope)',
         'gated': False,
     },
+    # Gated pair (Llama 3 / Gemma 2) — how to vendor them:
+    #   1. Log in to huggingface.co and accept the licenses at
+    #      https://huggingface.co/meta-llama/Meta-Llama-3-8B and
+    #      https://huggingface.co/google/gemma-2-2b
+    #   2. Create a fine-grained READ token (Settings → Access Tokens) scoped
+    #      to public gated repos you have access to.
+    #   3. export HF_TOKEN=hf_...
+    #   4. uv run python -m src.cli vendor --only llama3,gemma2
+    #   5. Commit vendor/tokenizers/SHA256SUMS.json so future loads are
+    #      integrity-checked.
     'llama3': {
         'repo': 'meta-llama/Meta-Llama-3-8B',
         'files': ['tokenizer.json'],
@@ -56,6 +66,19 @@ TOKENIZER_REGISTRY = {
         'files': ['tokenizer.json'],
         'label': 'Gemma 2',
         'gated': True,
+    },
+    # Aya-101's tokenizer is the unmodified mT5 SentencePiece model. The Aya
+    # repo (CohereLabs/aya-101, formerly CohereForAI/aya-101; Apache-2.0,
+    # ungated) ships only a converted tokenizer.json — the original
+    # spiece.model protobuf lives in google/mt5-base (Apache-2.0, ungated,
+    # Google/US). Both encode identically (verified at vendor time); we take
+    # the SentencePiece original so it loads via the sentencepiece library
+    # as inert data.
+    'aya101': {
+        'repo': 'google/mt5-base',
+        'files': ['spiece.model'],
+        'label': 'Aya-101 (Cohere, mT5 SentencePiece)',
+        'gated': False,
     },
     'arabert': {
         'repo': 'aubmindlab/bert-base-arabertv2',

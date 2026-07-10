@@ -38,8 +38,34 @@ def csvs():
 
 
 @cli.command()
+@click.option('--refresh', is_flag=True,
+              help='Re-download even if already vendored and verified')
+@click.option('--only', default=None,
+              help='Comma-separated tokenizer names (default: all in registry)')
+def vendor(refresh, only):
+    """Fetch tokenizer data files (vocab/merges only, no code) into vendor/.
+
+    Downloads are pinned to a commit SHA and hashed into
+    vendor/tokenizers/SHA256SUMS.json — commit that manifest. This is the
+    only command that touches the network for tokenizer assets.
+    """
+    from src.vendor_tokenizers import vendor as vendor_tokenizers
+    names = [n.strip() for n in only.split(',')] if only else None
+    try:
+        vendor_tokenizers(names, refresh=refresh)
+    except ValueError as e:
+        click.echo(str(e), err=True)
+        sys.exit(1)
+
+
+@cli.command()
 def tokenize():
-    """Run tiktoken + JAIS analysis on candidates (with and without tashkeel)."""
+    """Run tokenizer analysis on candidates (with and without tashkeel).
+
+    Uses tiktoken plus any vendored open-source tokenizers (JAIS, Qwen,
+    Llama 3, Gemma, AraBERT, CAMeLBERT). Vendored files are hash-verified
+    before loading; run 'vendor' first to fetch them.
+    """
     from src.tokenizer_check import check_tokenization, summarize
     candidates = DATA_DIR / 'candidates.jsonl'
     output = DATA_DIR / 'tokenizer_analysis.jsonl'
@@ -83,6 +109,57 @@ def display():
         console.print(f"\n[dim]Interactive HTML → {html_path}[/dim]")
     else:
         console.print("\n[dim]Run 'tokenize' to enable HTML export.[/dim]")
+
+
+@cli.command()
+@click.option('--models', '-m', default='llama,gemma',
+              help='Comma-separated model names (default: llama,gemma)')
+@click.option('--batch-size', '-b', default=25, type=int,
+              help='Verbs per batch (default: 25)')
+@click.option('--pull', 'do_pull', is_flag=True, help='Pull/update Ollama models before validating')
+@click.option('--dry-run', is_flag=True, help='Show batch count and ETA without calling Ollama')
+def validate(models, batch_size, do_pull, dry_run):
+    """Validate verb candidates using local LLMs via Ollama."""
+    from src.validate_ollama import (
+        DEFAULT_OLLAMA_MODELS, check_ollama_health, pull_model,
+        load_candidates, validate_all, console,
+    )
+
+    candidates_path = DATA_DIR / 'candidates.jsonl'
+    if not candidates_path.exists():
+        click.echo("Run 'generate' first.", err=True)
+        sys.exit(1)
+
+    # Parse model list
+    model_names = [m.strip() for m in models.split(',')]
+    model_map = {}
+    for name in model_names:
+        if ':' in name:
+            # Allow explicit tag: llama:llama4-scout
+            name, tag = name.split(':', 1)
+            model_map[name] = tag
+        elif name in DEFAULT_OLLAMA_MODELS:
+            model_map[name] = DEFAULT_OLLAMA_MODELS[name]
+        else:
+            model_map[name] = name  # Use name as tag
+
+    # Health check
+    if not dry_run:
+        if not check_ollama_health():
+            click.echo("Ollama is not running. Install and start it:", err=True)
+            click.echo("  curl -fsSL https://ollama.com/install.sh | sh", err=True)
+            click.echo("  ollama serve", err=True)
+            sys.exit(1)
+
+    # Pull models if requested
+    if do_pull:
+        console.print("\n[bold]Pulling models...[/bold]")
+        for name, tag in model_map.items():
+            if not pull_model(tag):
+                click.echo(f"Failed to pull {tag}. Skipping {name}.", err=True)
+
+    candidates = load_candidates(candidates_path)
+    validate_all(model_map, candidates, DATA_DIR, batch_size, dry_run)
 
 
 @cli.command()

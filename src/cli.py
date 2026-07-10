@@ -27,14 +27,55 @@ def generate(include_xyzn):
 
 
 @cli.command()
-def csvs():
-    """Generate per-model CSV templates from candidates."""
-    from src.generate_csvs import generate_csvs
+@click.option('--force', is_flag=True,
+              help='Overwrite CSVs even if they contain filled validation rows (asks first)')
+@click.option('--merge', is_flag=True,
+              help='Rebuild CSVs carrying filled rows over by (ROOT, PATTERN)')
+def csvs(force, merge):
+    """Generate per-model CSV templates from candidates.
+
+    Safe by default: CSVs with filled EXISTS? rows are skipped unless
+    --merge (non-destructive migration) or --force (destructive, confirmed)
+    is given.
+    """
+    from src.generate_csvs import MODELS, count_filled_rows, generate_csvs
     candidates = DATA_DIR / 'candidates.jsonl'
     if not candidates.exists():
         click.echo("Run 'generate' first.", err=True)
         sys.exit(1)
-    generate_csvs(candidates, DATA_DIR)
+    if force:
+        at_risk = {m: count_filled_rows(DATA_DIR / f'{m}.csv') for m in MODELS}
+        at_risk = {m: n for m, n in at_risk.items() if n > 0}
+        if at_risk:
+            click.echo(f"--force will DESTROY filled rows: {at_risk}", err=True)
+            click.confirm("Proceed?", abort=True)
+    generate_csvs(candidates, DATA_DIR, force=force, merge=merge)
+
+
+@cli.command('import-xlsx')
+@click.argument('xlsx_path', type=click.Path(exists=True, path_type=Path),
+                default=Path('data/haiku_filled.xlsx'))
+@click.option('--model', default='haiku', help='Target model CSV (default: haiku)')
+@click.option('--commit', is_flag=True,
+              help='Actually write to the CSV (default is a dry-run report)')
+def import_xlsx(xlsx_path, model, commit):
+    """Import filled validation rows from an xlsx workbook into a model CSV.
+
+    Dry-run by default: inspect the report, then re-run with --commit.
+    """
+    from src.import_xlsx import import_into_csv, read_filled_rows, report
+
+    filled = read_filled_rows(xlsx_path)
+    report(filled)
+    if not commit:
+        click.echo("\nDry-run only. Re-run with --commit to write.", err=True)
+        return
+    csv_path = DATA_DIR / f'{model}.csv'
+    if not csv_path.exists():
+        click.echo(f"{csv_path} does not exist — run 'csvs' first.", err=True)
+        sys.exit(1)
+    applied, unmatched = import_into_csv(filled, csv_path)
+    click.echo(f"Imported {applied} rows into {csv_path} ({unmatched} unmatched).", err=True)
 
 
 @cli.command()
@@ -118,7 +159,9 @@ def display():
               help='Verbs per batch (default: 25)')
 @click.option('--pull', 'do_pull', is_flag=True, help='Pull/update Ollama models before validating')
 @click.option('--dry-run', is_flag=True, help='Show batch count and ETA without calling Ollama')
-def validate(models, batch_size, do_pull, dry_run):
+@click.option('--backup-every', default=50, type=int,
+              help='Snapshot the CSV to data/backups/ every N batches (0 disables; default 50)')
+def validate(models, batch_size, do_pull, dry_run, backup_every):
     """Validate verb candidates using local LLMs via Ollama."""
     from src.validate_ollama import (
         DEFAULT_OLLAMA_MODELS, check_ollama_health, pull_model,
@@ -159,7 +202,7 @@ def validate(models, batch_size, do_pull, dry_run):
                 click.echo(f"Failed to pull {tag}. Skipping {name}.", err=True)
 
     candidates = load_candidates(candidates_path)
-    validate_all(model_map, candidates, DATA_DIR, batch_size, dry_run)
+    validate_all(model_map, candidates, DATA_DIR, batch_size, dry_run, backup_every)
 
 
 @cli.command()

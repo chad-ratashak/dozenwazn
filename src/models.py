@@ -14,7 +14,6 @@ class VerbCandidate(BaseModel):
 class ValidationResult(BaseModel):
     verb: str
     exists: bool | None = None
-    single_token_word: bool | None = None
     dialect_only: bool | None = None
     list_of_dialects: list[str] = []
     dialect_meanings: str = ""

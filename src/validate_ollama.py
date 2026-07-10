@@ -13,7 +13,13 @@ import httpx
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn
 
-from src.generate_csvs import CSV_HEADERS
+from src.generate_csvs import (
+    CSV_HEADERS,
+    assert_csv_schema,
+    backup_csv,
+    count_filled_rows,
+    write_scaffold,
+)
 from src.models import ValidationResult
 
 console = Console()
@@ -35,12 +41,11 @@ You are an expert in Arabic morphology (صرف). Your task is to classify Arabic
 
 For each verb provided, determine:
 1. **exists**: Does this verb exist in Arabic (classical, MSA, or any dialect)? true/false
-2. **single_token_word**: Is this a common, frequently-used word? true/false
-3. **dialect_only**: Is this verb used ONLY in dialects and NOT in Modern Standard Arabic (MSA) or Classical Arabic? true/false
-4. **list_of_dialects**: If dialect_only is true, list which dialects use it (e.g., ["Egyptian", "Levantine"]). Otherwise [].
-5. **dialect_meanings**: If used in dialects, brief English meaning(s) in dialectal usage. Otherwise "".
-6. **msa**: Is this verb used in Modern Standard Arabic? true/false
-7. **msa_meanings**: If used in MSA, brief English meaning(s). Otherwise "".
+2. **dialect_only**: Is this verb used ONLY in dialects and NOT in Modern Standard Arabic (MSA) or Classical Arabic? true/false
+3. **list_of_dialects**: If dialect_only is true, list which dialects use it (e.g., ["Egyptian", "Levantine"]). Otherwise [].
+4. **dialect_meanings**: If used in dialects, brief English meaning(s) in dialectal usage. Otherwise "".
+5. **msa**: Is this verb used in Modern Standard Arabic? true/false
+6. **msa_meanings**: If used in MSA, brief English meaning(s). Otherwise "".
 
 Rules:
 - Verbs are presented with full tashkeel (diacritics). Pay attention to the vowel pattern.
@@ -50,12 +55,12 @@ Rules:
 
 Respond with a JSON object containing a single key "results" whose value is an array of objects, \
 one per verb in the SAME ORDER as the input. Each object must have these exact keys:
-  verb, exists, single_token_word, dialect_only, list_of_dialects, dialect_meanings, msa, msa_meanings
+  verb, exists, dialect_only, list_of_dialects, dialect_meanings, msa, msa_meanings
 
 Example for a batch of 2 verbs:
 {"results": [
-  {"verb": "كَتَبَ", "exists": true, "single_token_word": true, "dialect_only": false, "list_of_dialects": [], "dialect_meanings": "", "msa": true, "msa_meanings": "to write"},
-  {"verb": "ءَبُتَ", "exists": false, "single_token_word": false, "dialect_only": false, "list_of_dialects": [], "dialect_meanings": "", "msa": false, "msa_meanings": ""}
+  {"verb": "كَتَبَ", "exists": true, "dialect_only": false, "list_of_dialects": [], "dialect_meanings": "", "msa": true, "msa_meanings": "to write"},
+  {"verb": "ءَبُتَ", "exists": false, "dialect_only": false, "list_of_dialects": [], "dialect_meanings": "", "msa": false, "msa_meanings": ""}
 ]}"""
 
 
@@ -259,7 +264,6 @@ def parse_response(
                 results.append(ValidationResult(
                     verb=verb,
                     exists=_to_bool(item.get("exists")),
-                    single_token_word=_to_bool(item.get("single_token_word")),
                     dialect_only=_to_bool(item.get("dialect_only")),
                     list_of_dialects=item.get("list_of_dialects", []) or [],
                     dialect_meanings=str(item.get("dialect_meanings", "")),
@@ -307,6 +311,7 @@ def load_csv_progress(csv_path: Path) -> set[str]:
     done = set()
     if not csv_path.exists():
         return done
+    assert_csv_schema(csv_path)
     with open(csv_path, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
@@ -322,7 +327,13 @@ def load_csv_rows(csv_path: Path) -> list[dict]:
 
 
 def update_csv(csv_path: Path, results: list[ValidationResult]):
-    """Update CSV rows matching the given validation results."""
+    """Update CSV rows matching the given validation results.
+
+    Matches by VERB string: an LLM judgment is about the surface form, so
+    every row sharing that surface (collapsed hollow/geminate triples, and
+    cross-root collisions like قول/قيل → قَالَ) receives the same verdict.
+    """
+    assert_csv_schema(csv_path)
     rows = load_csv_rows(csv_path)
     result_map = {r.verb: r for r in results}
 
@@ -332,7 +343,6 @@ def update_csv(csv_path: Path, results: list[ValidationResult]):
             r = result_map[verb]
             if r.exists is not None:
                 row["EXISTS?"] = str(r.exists)
-                row["SINGLE_TOKEN_WORD?"] = str(r.single_token_word) if r.single_token_word is not None else ""
                 row["DIALECT_ONLY?"] = str(r.dialect_only) if r.dialect_only is not None else ""
                 row["LIST_OF_DIALECTS"] = "|".join(r.list_of_dialects) if r.list_of_dialects else ""
                 row["DIALECT_MEANINGS"] = r.dialect_meanings
@@ -353,14 +363,7 @@ def ensure_csv_exists(csv_path: Path, candidates: list[dict]):
     if csv_path.exists():
         return
     console.print(f"  Creating {csv_path}...")
-    with open(csv_path, "w", encoding="utf-8", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(CSV_HEADERS)
-        for c in candidates:
-            writer.writerow([
-                c["root"], c["root_type"], c["arity"], c["pattern"], c["verb"],
-                "", "", "", "", "", "", "",
-            ])
+    write_scaffold(csv_path, candidates)
 
 
 # ── Main Validation Pipeline ──
@@ -389,10 +392,16 @@ def validate_model(
     candidates: list[dict],
     data_dir: Path,
     batch_size: int = 25,
+    backup_every: int = 50,
 ):
     """Run full validation pipeline for one model."""
     csv_path = data_dir / f"{model_name}.csv"
     ensure_csv_exists(csv_path, candidates)
+
+    # A multi-day run must survive crashes and overwrite bugs: snapshot any
+    # existing progress before touching the file, then periodically below.
+    if count_filled_rows(csv_path) > 0:
+        console.print(f"  Backup: {backup_csv(csv_path, tag='run', keep=5)}")
 
     # Check what's already done
     done = load_csv_progress(csv_path)
@@ -426,13 +435,17 @@ def validate_model(
         ) as progress:
             task = progress.add_task(f"[{model_name}]", total=len(batches))
 
-            for batch in batches:
+            for batch_num, batch in enumerate(batches, start=1):
                 results = classify_batch(model_tag, batch, client, logger)
                 # Filter out results where we got no answer (exists=None) — don't save those
                 valid_results = [r for r in results if r.exists is not None]
                 if valid_results:
                     update_csv(csv_path, valid_results)
                     total_validated += len(valid_results)
+
+                if backup_every > 0 and batch_num % backup_every == 0:
+                    backup_csv(csv_path, tag='run', keep=5)
+                    logger.info(f"Periodic backup after batch {batch_num}")
 
                 progress.advance(task)
 
@@ -452,6 +465,7 @@ def validate_all(
     data_dir: Path,
     batch_size: int = 25,
     dry_run: bool = False,
+    backup_every: int = 50,
 ):
     """Run validation for all specified models sequentially."""
     for model_name, model_tag in models.items():
@@ -476,7 +490,7 @@ def validate_all(
         if dry_run:
             continue
 
-        validate_model(model_name, model_tag, candidates, data_dir, batch_size)
+        validate_model(model_name, model_tag, candidates, data_dir, batch_size, backup_every)
 
 
 def load_candidates(candidates_path: Path) -> list[dict]:

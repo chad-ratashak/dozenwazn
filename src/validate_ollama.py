@@ -5,7 +5,10 @@ import csv
 import json
 import logging
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -29,7 +32,10 @@ console = Console()
 OLLAMA_BASE = "http://localhost:11434"
 
 DEFAULT_OLLAMA_MODELS = {
-    "llama": "llama3.2",
+    # Pinned tags (":latest" drifts). Both Meta and Google are US-origin,
+    # compliant with the model-origin policy. The gemma choice is subject
+    # to the spotcheck A/B (gemma4:e2b vs gemma3:4b) — see `spotcheck`.
+    "llama": "llama3.2:3b",
     "gemma": "gemma4:e2b",
 }
 
@@ -43,13 +49,17 @@ For each verb provided, determine:
 1. **exists**: Does this verb exist in Arabic (classical, MSA, or any dialect)? true/false
 2. **dialect_only**: Is this verb used ONLY in dialects and NOT in Modern Standard Arabic (MSA) or Classical Arabic? true/false
 3. **list_of_dialects**: If dialect_only is true, list which dialects use it (e.g., ["Egyptian", "Levantine"]). Otherwise [].
-4. **dialect_meanings**: If used in dialects, brief English meaning(s) in dialectal usage. Otherwise "".
+4. **dialect_meanings**: If used in dialects, English meaning(s), at most 6 words. Otherwise "".
 5. **msa**: Is this verb used in Modern Standard Arabic? true/false
-6. **msa_meanings**: If used in MSA, brief English meaning(s). Otherwise "".
+6. **msa_meanings**: If used in MSA, English meaning(s), at most 6 words. Otherwise "".
 
 Rules:
-- Verbs are presented with full tashkeel (diacritics). Pay attention to the vowel pattern.
-- A root may have some patterns that exist and others that don't. Evaluate each verb independently.
+- Verbs are presented with full tashkeel (diacritics). The vowel pattern MATTERS.
+- The three vocalizations of a root (فَعَلَ / فَعِلَ / فَعُلَ) are DIFFERENT verbs; usually at most
+  one of them exists. NEVER give identical answers for all three vocalizations of a root,
+  and never copy a meaning from one verb to another.
+- Evaluate each verb independently. Most candidates in a batch do NOT exist —
+  they are generated combinatorially.
 - If a verb does not exist at all, set exists=false and leave all other fields at defaults.
 - Be conservative: if unsure whether a verb exists, set exists=false.
 
@@ -57,11 +67,66 @@ Respond with a JSON object containing a single key "results" whose value is an a
 one per verb in the SAME ORDER as the input. Each object must have these exact keys:
   verb, exists, dialect_only, list_of_dialects, dialect_meanings, msa, msa_meanings
 
-Example for a batch of 2 verbs:
+Example — note how the three vocalizations of كتب get DIFFERENT answers, and how
+rare-but-real faʿila/faʿula verbs are recognized while invented roots are rejected:
 {"results": [
   {"verb": "كَتَبَ", "exists": true, "dialect_only": false, "list_of_dialects": [], "dialect_meanings": "", "msa": true, "msa_meanings": "to write"},
-  {"verb": "ءَبُتَ", "exists": false, "dialect_only": false, "list_of_dialects": [], "dialect_meanings": "", "msa": false, "msa_meanings": ""}
+  {"verb": "كَتِبَ", "exists": false, "dialect_only": false, "list_of_dialects": [], "dialect_meanings": "", "msa": false, "msa_meanings": ""},
+  {"verb": "كَتُبَ", "exists": false, "dialect_only": false, "list_of_dialects": [], "dialect_meanings": "", "msa": false, "msa_meanings": ""},
+  {"verb": "عَلِمَ", "exists": true, "dialect_only": false, "list_of_dialects": [], "dialect_meanings": "", "msa": true, "msa_meanings": "to know"},
+  {"verb": "حَسُنَ", "exists": true, "dialect_only": false, "list_of_dialects": [], "dialect_meanings": "", "msa": true, "msa_meanings": "to be good"},
+  {"verb": "ثَذَغَ", "exists": false, "dialect_only": false, "list_of_dialects": [], "dialect_meanings": "", "msa": false, "msa_meanings": ""},
+  {"verb": "دَحْبَجَ", "exists": false, "dialect_only": false, "list_of_dialects": [], "dialect_meanings": "", "msa": false, "msa_meanings": ""}
 ]}"""
+
+
+def build_response_schema(n_verbs: int) -> dict:
+    """JSON schema for Ollama structured outputs: exactly one result object
+    per verb, exact field set — kills truncated arrays and free-form drift."""
+    return {
+        "type": "object",
+        "properties": {
+            "results": {
+                "type": "array",
+                "minItems": n_verbs,
+                "maxItems": n_verbs,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "verb": {"type": "string"},
+                        "exists": {"type": "boolean"},
+                        "dialect_only": {"type": "boolean"},
+                        "list_of_dialects": {"type": "array", "items": {"type": "string"}},
+                        "dialect_meanings": {"type": "string"},
+                        "msa": {"type": "boolean"},
+                        "msa_meanings": {"type": "string"},
+                    },
+                    "required": ["verb", "exists", "dialect_only", "list_of_dialects",
+                                 "dialect_meanings", "msa", "msa_meanings"],
+                },
+            },
+        },
+        "required": ["results"],
+    }
+
+
+def probe_schema_support(model_tag: str, client: httpx.Client, logger: logging.Logger) -> bool:
+    """One tiny schema-constrained request; False → fall back to format=json."""
+    try:
+        resp = client.post("/api/chat", json={
+            "model": model_tag,
+            "messages": [{"role": "user", "content": 'Reply with JSON: {"ok": true}'}],
+            "format": {"type": "object", "properties": {"ok": {"type": "boolean"}},
+                       "required": ["ok"]},
+            "stream": False,
+            "options": {"num_predict": 32},
+        })
+        resp.raise_for_status()
+        json.loads(resp.json().get("message", {}).get("content", ""))
+        return True
+    except Exception as e:
+        logger.warning(f"Structured-output probe failed ({e}); falling back to format=json")
+        return False
 
 
 # ── Ollama Health & Model Management ──
@@ -137,6 +202,7 @@ def classify_batch(
     verbs: list[dict],
     client: httpx.Client,
     logger: logging.Logger,
+    use_schema: bool = False,
 ) -> list[ValidationResult]:
     """Send a batch of verbs to Ollama and parse the response."""
     # Collapsed hollow/geminate triples share one surface — send each
@@ -151,11 +217,14 @@ def classify_batch(
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_msg},
         ],
-        "format": "json",
+        "format": build_response_schema(len(verb_list)) if use_schema else "json",
         "stream": False,
         "options": {
             "temperature": 0.1,
-            "num_predict": 8192,
+            # Enough for ~120 tokens per verb plus wrapper — a hard cap on
+            # degenerate repetition loops (a fixed 8192 let runaway outputs
+            # burn a minute per batch).
+            "num_predict": 120 * len(verb_list) + 256,
         },
     }
 
@@ -256,6 +325,24 @@ def parse_response(
     for item in items:
         if isinstance(item, dict) and "verb" in item:
             result_map[item["verb"]] = item
+
+    # Positional alignment fallback: some models echo verbs with dropped or
+    # altered diacritics. When counts line up but strings drift, align by
+    # index — sanity-checked on the consonant skeleton where possible.
+    if len(items) == len(expected_verbs):
+        strip = re.compile(r'[ً-ْٰ]')
+        for idx, verb in enumerate(expected_verbs):
+            if verb in result_map:
+                continue
+            item = items[idx]
+            if not (isinstance(item, dict) and "verb" in item):
+                continue
+            got = item["verb"]
+            if got in expected_verbs:
+                continue  # it's a (possibly misordered) different verb, not a drift
+            if strip.sub('', got) == strip.sub('', verb) or got == "":
+                logger.warning(f"Positional alignment: {got!r} → {verb!r}")
+                result_map[verb] = item
 
     # Match to expected verbs
     results = []
@@ -378,6 +465,97 @@ def ensure_csv_exists(csv_path: Path, candidates: list[dict]):
     write_scaffold(csv_path, candidates)
 
 
+class RowStore:
+    """In-memory model CSV with fan-out updates and atomic flush.
+
+    The old path re-read and rewrote the whole 2.7MB CSV on every batch
+    (~2,600 full rewrites per run — and a read-modify-write race once
+    batches run in parallel). The store loads rows once, mutates in memory
+    under a lock, and flushes atomically after each completed batch.
+    """
+
+    def __init__(self, csv_path: Path):
+        assert_csv_schema(csv_path)
+        self.csv_path = csv_path
+        self._lock = threading.Lock()
+        with open(csv_path, "r", encoding="utf-8", newline="") as f:
+            self.rows = list(csv.DictReader(f))
+        self._by_verb: dict[str, list[dict]] = {}
+        for row in self.rows:
+            self._by_verb.setdefault(row["VERB"], []).append(row)
+
+    def filled_keys(self) -> set[tuple[str, str]]:
+        with self._lock:
+            return {
+                (row["ROOT"], row["PATTERN"])
+                for row in self.rows
+                if (row.get("EXISTS?") or "").strip()
+            }
+
+    def update(self, results: list[ValidationResult]) -> int:
+        """Apply verdicts (fan-out by VERB surface). Returns rows written.
+
+        A result verb with no matching row is a bug upstream — raise, don't
+        silently drop it.
+        """
+        updated = 0
+        with self._lock:
+            for r in results:
+                if r.exists is None:
+                    continue
+                rows = self._by_verb.get(r.verb)
+                if rows is None:
+                    raise KeyError(f"result verb has no CSV row: {r.verb!r}")
+                for row in rows:
+                    updated += 1
+                    row["EXISTS?"] = str(r.exists)
+                    row["DIALECT_ONLY?"] = str(r.dialect_only) if r.dialect_only is not None else ""
+                    row["LIST_OF_DIALECTS"] = "|".join(r.list_of_dialects) if r.list_of_dialects else ""
+                    row["DIALECT_MEANINGS"] = r.dialect_meanings
+                    row["MSA?"] = str(r.msa) if r.msa is not None else ""
+                    row["MSA_MEANINGS"] = r.msa_meanings
+        return updated
+
+    def flush(self):
+        with self._lock:
+            tmp_path = self.csv_path.with_suffix(".csv.tmp")
+            with open(tmp_path, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
+                writer.writeheader()
+                writer.writerows(self.rows)
+            tmp_path.rename(self.csv_path)
+
+
+@dataclass
+class RunStats:
+    batches: int = 0
+    verbs_requested: int = 0
+    verbs_resolved_first_pass: int = 0
+    verbs_missing_first_pass: int = 0
+    verbs_resolved_retry: int = 0
+    verbs_unresolved_final: int = 0
+    rows_written: int = 0
+    started: float = field(default_factory=time.monotonic)
+
+    def report(self, logger: logging.Logger):
+        from src.stats import fmt_rate
+        elapsed = time.monotonic() - self.started
+        rate = self.verbs_requested / elapsed if elapsed > 0 else 0.0
+        lines = [
+            f"Batches: {self.batches}",
+            f"Verbs requested (distinct surfaces): {self.verbs_requested:,}",
+            f"Missing after first pass: "
+            f"{fmt_rate(self.verbs_missing_first_pass, max(self.verbs_requested, 1))}",
+            f"Recovered by retry passes: {self.verbs_resolved_retry:,}",
+            f"Unresolved (left blank, will resume): {self.verbs_unresolved_final:,}",
+            f"CSV rows written: {self.rows_written:,}",
+            f"Throughput: {rate:.2f} verbs/s ({elapsed:.0f}s elapsed)",
+        ]
+        for line in lines:
+            console.print(f"  {line}")
+            logger.info(line)
+
+
 # ── Main Validation Pipeline ──
 
 
@@ -406,8 +584,15 @@ def validate_model(
     batch_size: int = 25,
     backup_every: int = 50,
     order: str = "plausibility",
+    parallel: int = 1,
 ):
-    """Run full validation pipeline for one model."""
+    """Run full validation pipeline for one model.
+
+    parallel > 1 issues that many batches concurrently — the Ollama server
+    must run with OLLAMA_NUM_PARALLEL >= parallel to actually serve them
+    concurrently (requests queue harmlessly otherwise). Apple Silicon is
+    compute-bound: expect ~1.3–1.8×, measure with `bench` before trusting.
+    """
     csv_path = data_dir / f"{model_name}.csv"
     ensure_csv_exists(csv_path, candidates)
 
@@ -446,16 +631,63 @@ def validate_model(
 
     console.print(f"  {len(done):,} already done, {len(remaining):,} remaining")
 
-    batches = build_batches(remaining, batch_size)
     logger = setup_logger(model_name, data_dir)
-    logger.info(f"Starting validation: model={model_tag}, remaining={len(remaining)}, batches={len(batches)}, batch_size={batch_size}")
+    logger.info(
+        f"Starting validation: model={model_tag}, remaining={len(remaining)}, "
+        f"batch_size={batch_size}, parallel={parallel}"
+    )
 
     client = httpx.Client(
         base_url=OLLAMA_BASE,
         timeout=httpx.Timeout(connect=10.0, read=300.0, write=10.0, pool=10.0),
     )
+    store = RowStore(csv_path)
+    stats = RunStats()
+    by_verb = {c["verb"]: c for c in remaining}
+    use_schema = probe_schema_support(model_tag, client, logger)
+    logger.info(f"Structured outputs: {'schema' if use_schema else 'format=json (fallback)'}")
 
-    total_validated = 0
+    def run_pass(pass_candidates: list[dict], pass_batch_size: int,
+                 progress, task, first_pass: bool) -> list[str]:
+        """Run one pass over candidates; returns verbs still unresolved."""
+        batches = build_batches(pass_candidates, pass_batch_size)
+        unresolved: list[str] = []
+        completed = 0
+
+        def work(batch):
+            return classify_batch(model_tag, batch, client, logger, use_schema=use_schema)
+
+        with ThreadPoolExecutor(max_workers=max(1, parallel)) as pool:
+            futures = {pool.submit(work, b): b for b in batches}
+            try:
+                for fut in as_completed(futures):
+                    results = fut.result()
+                    stats.batches += 1
+                    resolved = [r for r in results if r.exists is not None]
+                    missing = [r.verb for r in results if r.exists is None]
+                    unresolved.extend(missing)
+                    if first_pass:
+                        stats.verbs_requested += len(results)
+                        stats.verbs_resolved_first_pass += len(resolved)
+                        stats.verbs_missing_first_pass += len(missing)
+                    else:
+                        stats.verbs_resolved_retry += len(resolved)
+                    if resolved:
+                        stats.rows_written += store.update(resolved)
+                        store.flush()
+                    completed += 1
+                    if backup_every > 0 and completed % backup_every == 0:
+                        backup_csv(csv_path, tag="run", keep=5)
+                        logger.info(f"Periodic backup after batch {completed}")
+                    progress.advance(task)
+            except KeyboardInterrupt:
+                # Cancel queued batches; in-flight ones finish and are lost —
+                # their rows stay blank and the next run resumes them.
+                for f in futures:
+                    f.cancel()
+                raise
+        return unresolved
+
     try:
         with Progress(
             SpinnerColumn(),
@@ -466,31 +698,38 @@ def validate_model(
             TimeRemainingColumn(),
             console=console,
         ) as progress:
-            task = progress.add_task(f"[{model_name}]", total=len(batches))
+            n_batches = len(build_batches(remaining, batch_size))
+            task = progress.add_task(f"[{model_name}]", total=n_batches)
+            unresolved = run_pass(remaining, batch_size, progress, task, first_pass=True)
 
-            for batch_num, batch in enumerate(batches, start=1):
-                results = classify_batch(model_tag, batch, client, logger)
-                # Filter out results where we got no answer (exists=None) — don't save those
-                valid_results = [r for r in results if r.exists is not None]
-                if valid_results:
-                    # Count rows actually written (surface verdicts fan out
-                    # to every row sharing the surface), not surfaces sent.
-                    total_validated += update_csv(csv_path, valid_results)
+            # Retry queue: verbs the model dropped are re-batched smaller —
+            # never written as defaults. Whatever survives both passes stays
+            # blank and resumes next run.
+            for retry_round in (1, 2):
+                if not unresolved:
+                    break
+                retry_candidates = [by_verb[v] for v in dict.fromkeys(unresolved) if v in by_verb]
+                retry_size = max(4, batch_size // 4)
+                logger.info(f"Retry pass {retry_round}: {len(retry_candidates)} verbs "
+                            f"at batch size {retry_size}")
+                retry_task = progress.add_task(
+                    f"[{model_name} retry {retry_round}]",
+                    total=len(build_batches(retry_candidates, retry_size)),
+                )
+                unresolved = run_pass(retry_candidates, retry_size, progress,
+                                      retry_task, first_pass=False)
 
-                if backup_every > 0 and batch_num % backup_every == 0:
-                    backup_csv(csv_path, tag='run', keep=5)
-                    logger.info(f"Periodic backup after batch {batch_num}")
-
-                progress.advance(task)
+            stats.verbs_unresolved_final = len(set(unresolved))
 
     except KeyboardInterrupt:
-        console.print(f"\n  [yellow]Interrupted! {total_validated:,} verbs saved.[/yellow]")
-        logger.info(f"Interrupted after {total_validated} verbs")
+        console.print(f"\n  [yellow]Interrupted! {stats.rows_written:,} rows saved.[/yellow]")
+        logger.info(f"Interrupted after {stats.rows_written} rows")
     finally:
+        store.flush()
         client.close()
 
-    console.print(f"  [green]Validated {total_validated:,} verbs → {csv_path}[/green]")
-    logger.info(f"Completed: {total_validated} verbs validated")
+    console.print(f"  [green]Run summary → {csv_path}[/green]")
+    stats.report(logger)
 
 
 def validate_all(
@@ -501,6 +740,7 @@ def validate_all(
     dry_run: bool = False,
     backup_every: int = 50,
     order: str = "plausibility",
+    parallel: int = 1,
 ):
     """Run validation for all specified models sequentially."""
     for model_name, model_tag in models.items():
@@ -537,7 +777,8 @@ def validate_all(
         if dry_run:
             continue
 
-        validate_model(model_name, model_tag, candidates, data_dir, batch_size, backup_every, order)
+        validate_model(model_name, model_tag, candidates, data_dir, batch_size,
+                       backup_every, order, parallel)
 
 
 def load_candidates(candidates_path: Path) -> list[dict]:

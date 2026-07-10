@@ -200,7 +200,9 @@ def display():
               help='Snapshot the CSV to data/backups/ every N batches (0 disables; default 50)')
 @click.option('--order', type=click.Choice(['plausibility', 'input']), default='plausibility',
               help='Batch order: most-plausible roots first (default) or input order')
-def validate(models, batch_size, do_pull, dry_run, backup_every, order):
+@click.option('--parallel', default=1, type=int,
+              help='Concurrent in-flight batches (server needs OLLAMA_NUM_PARALLEL >= this)')
+def validate(models, batch_size, do_pull, dry_run, backup_every, order, parallel):
     """Validate verb candidates using local LLMs via Ollama."""
     from src.validate_ollama import (
         DEFAULT_OLLAMA_MODELS, check_ollama_health, pull_model,
@@ -241,7 +243,81 @@ def validate(models, batch_size, do_pull, dry_run, backup_every, order):
                 click.echo(f"Failed to pull {tag}. Skipping {name}.", err=True)
 
     candidates = load_candidates(candidates_path)
-    validate_all(model_map, candidates, DATA_DIR, batch_size, dry_run, backup_every, order)
+    validate_all(model_map, candidates, DATA_DIR, batch_size, dry_run, backup_every,
+                 order, parallel)
+
+
+def _parse_model_map(models: str) -> dict:
+    from src.validate_ollama import DEFAULT_OLLAMA_MODELS
+    model_map = {}
+    for name in (m.strip() for m in models.split(',')):
+        if ':' in name:
+            name, tag = name.split(':', 1)
+            model_map[name] = tag
+        elif name in DEFAULT_OLLAMA_MODELS:
+            model_map[name] = DEFAULT_OLLAMA_MODELS[name]
+        else:
+            model_map[name] = name
+    return model_map
+
+
+@cli.command()
+@click.option('--models', '-m', default='llama,gemma',
+              help='Comma-separated model names or name:tag overrides')
+@click.option('--n-real', default=50, type=int)
+@click.option('--n-fake', default=50, type=int)
+@click.option('--seed', default=42, type=int)
+@click.option('--batch-size', '-b', default=25, type=int)
+@click.option('--min-balacc', default=0.80, type=float,
+              help='Gate: minimum balanced accuracy (default 0.80)')
+@click.option('--min-specificity', default=0.70, type=float,
+              help='Gate: minimum specificity — catches everything-is-true models (default 0.70)')
+@click.option('--max-missing', default=0.05, type=float,
+              help='Gate: maximum missing-verb rate (default 0.05)')
+def spotcheck(models, n_real, n_fake, seed, batch_size,
+              min_balacc, min_specificity, max_missing):
+    """Accuracy gate before long validation runs: GO/NO-GO per model.
+
+    Runs known-real + known-fake verbs through the exact production path.
+    PASS writes data/spotcheck_{model}.PASS (the launchers require it).
+    For the gemma A/B: `spotcheck -m gemma:gemma4:e2b` then
+    `spotcheck -m gemma:gemma3:4b` — the last PASS wins the marker.
+    """
+    from src.spotcheck import run_spotcheck
+    from src.validate_ollama import check_ollama_health
+
+    if not check_ollama_health():
+        click.echo("Ollama is not running — start it with `ollama serve`.", err=True)
+        sys.exit(1)
+
+    all_passed = True
+    for name, tag in _parse_model_map(models).items():
+        passed = run_spotcheck(
+            name, tag, DATA_DIR, n_real=n_real, n_fake=n_fake, seed=seed,
+            batch_size=batch_size, min_balacc=min_balacc,
+            min_specificity=min_specificity, max_missing=max_missing,
+        )
+        all_passed = all_passed and passed
+    sys.exit(0 if all_passed else 1)
+
+
+@cli.command()
+@click.option('--models', '-m', default='gemma', help='Model names or name:tag overrides')
+@click.option('--batches', default=3, type=int, help='Batches per config (default 3)')
+def bench(models, batches):
+    """Throughput grid (batch size × parallel): verbs/s and missing-rate.
+
+    Use before a long run to pick --batch-size/--parallel; quality
+    (missing-rate) degrades with batch size, so pick on both axes.
+    """
+    from src.spotcheck import run_bench
+    from src.validate_ollama import check_ollama_health
+
+    if not check_ollama_health():
+        click.echo("Ollama is not running — start it with `ollama serve`.", err=True)
+        sys.exit(1)
+    for name, tag in _parse_model_map(models).items():
+        run_bench(name, tag, DATA_DIR, n_batches=batches)
 
 
 @cli.command()

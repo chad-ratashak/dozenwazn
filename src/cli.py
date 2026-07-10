@@ -155,11 +155,28 @@ def tokenize():
     summarize(output)
 
 
+def _load_neologism_keys(limit: int = 200) -> list:
+    """Top-N (root, pattern) keys from data/analysis/neologisms.jsonl, if present."""
+    import json
+    path = DATA_DIR / 'analysis' / 'neologisms.jsonl'
+    if not path.exists():
+        return []
+    keys = []
+    with open(path, 'r', encoding='utf-8') as f:
+        for line in f:
+            if len(keys) >= limit:
+                break
+            if line.strip():
+                rec = json.loads(line)
+                keys.append((rec['root'], rec['pattern']))
+    return keys
+
+
 @cli.command()
 def display():
     """Display candidates and analysis in terminal + generate HTML."""
     from src.display import (
-        console, load_candidates, load_tokenizer_data,
+        console, load_candidates, load_tokenizer_data, load_validity,
         display_stats, display_tier_summary, generate_html,
     )
     from rich.panel import Panel
@@ -179,12 +196,16 @@ def display():
 
     if tok_path.exists():
         records = load_tokenizer_data(tok_path)
+        validity_map = load_validity(DATA_DIR)
         console.print()
-        display_tier_summary(records)
+        display_tier_summary(records, validity_map)
 
         html_path = DATA_DIR / 'dozenwazn.html'
-        generate_html(records, html_path)
-        console.print(f"\n[dim]Interactive HTML → {html_path}[/dim]")
+        generate_html(records, html_path, validity_map, _load_neologism_keys())
+        size_mb = html_path.stat().st_size / 1e6
+        console.print(f"\n[dim]Interactive HTML → {html_path} ({size_mb:.1f} MB)[/dim]")
+        if size_mb > 20:
+            console.print("[yellow]HTML exceeds 20 MB — consider trimming embedded details.[/yellow]")
     else:
         console.print("\n[dim]Run 'tokenize' to enable HTML export.[/dim]")
 
@@ -323,7 +344,7 @@ def bench(models, batches):
 @cli.command()
 def html():
     """Generate interactive HTML visualization only."""
-    from src.display import load_tokenizer_data, generate_html
+    from src.display import generate_html, load_tokenizer_data, load_validity
 
     tok_path = DATA_DIR / 'tokenizer_analysis.jsonl'
     if not tok_path.exists():
@@ -332,8 +353,9 @@ def html():
 
     records = load_tokenizer_data(tok_path)
     html_path = DATA_DIR / 'dozenwazn.html'
-    generate_html(records, html_path)
-    click.echo(f"Interactive HTML → {html_path}", err=True)
+    generate_html(records, html_path, load_validity(DATA_DIR), _load_neologism_keys())
+    size_mb = html_path.stat().st_size / 1e6
+    click.echo(f"Interactive HTML → {html_path} ({size_mb:.1f} MB)", err=True)
 
 
 @cli.group()

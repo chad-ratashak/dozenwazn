@@ -58,8 +58,14 @@ TIER_RICH_STYLES = {
 }
 
 
-def classify_token_tier(record: dict) -> int:
-    """Classify a tokenizer analysis record into a tier (0-5)."""
+def classify_token_tier(record: dict, validity: dict | None = None) -> int:
+    """Classify a tokenizer analysis record into a tier (0-5).
+
+    Single-token status wins the pixel (tiers 0–2) regardless of validity —
+    validity is shown in the tooltip/modal. Otherwise validation/gold data
+    decides tier 3 (real word, no single token) vs 4 (not a real word),
+    falling back to 5 (unverified).
+    """
     bare = record.get('tokens_bare', {})
     jais_single = bare.get('jais', 99) == 1
     o200k_single = bare.get('o200k_base', 99) == 1
@@ -70,8 +76,53 @@ def classify_token_tier(record: dict) -> int:
         return 1
     elif o200k_single:
         return 2
-    # Tiers 3-4 require validation data (future)
+    if validity is not None:
+        if validity.get('status') == 'real':
+            return 3
+        if validity.get('status') == 'not_real':
+            return 4
     return 5
+
+
+def load_validity(data_dir: Path) -> dict:
+    """(root, pattern) → validity for tiering and modal details.
+
+    Combines gold.csv and any populated model CSVs through the analysis
+    consensus (gold > LLM majority > single LLM). Returns {} when neither
+    exists, which keeps the display identical to the pre-validation era.
+    """
+    from src.analysis import consensus, load_gold, load_model_votes
+
+    gold = load_gold(data_dir) or {}
+    votes_by_model = load_model_votes(Path(data_dir))
+    keys = set(gold)
+    for votes in votes_by_model.values():
+        keys.update(votes)
+
+    out = {}
+    for key in keys:
+        votes = {m: mv[key]['exists'] for m, mv in votes_by_model.items() if key in mv}
+        g = gold.get(key)
+        cons = consensus(votes, g['real'] if g else None)
+
+        gloss = (g or {}).get('gloss') or ''
+        details = None
+        for mv in votes_by_model.values():
+            v = mv.get(key)
+            if v is None:
+                continue
+            if not gloss:
+                gloss = v.get('msa_meanings') or v.get('dialect_meanings') or ''
+            if details is None:
+                details = v
+        out[key] = {
+            'status': cons['status'],
+            'provenance': cons['provenance'],
+            'gloss': gloss,
+            'gold': (g or {}).get('gold', ''),
+            'details': details,
+        }
+    return out
 
 
 # ── Data loading ─────────────────────────────────────────────────────
@@ -122,8 +173,12 @@ def display_stats(candidates: list[dict]):
     console.print(table)
 
 
-def display_tier_summary(records: list[dict]):
-    tier_counts = Counter(classify_token_tier(r) for r in records)
+def display_tier_summary(records: list[dict], validity_map: dict | None = None):
+    validity_map = validity_map or {}
+    tier_counts = Counter(
+        classify_token_tier(r, validity_map.get((r.get('root', ''), r.get('pattern', ''))))
+        for r in records
+    )
     total = len(records)
     table = Table(title="Token Tier Distribution", border_style="bright_blue")
     table.add_column("Tier", style="bold")
@@ -145,17 +200,31 @@ def display_tier_summary(records: list[dict]):
 
 # ── Interactive HTML visualization ───────────────────────────────────
 
-def generate_html(records: list[dict], output_path: Path):
-    """Generate the interactive canvas-based HTML visualization."""
+def generate_html(records: list[dict], output_path: Path,
+                  validity_map: dict | None = None,
+                  neologisms: list | None = None):
+    """Generate the interactive canvas-based HTML visualization.
+
+    validity_map (from load_validity) drives tiers 3/4, the modal's
+    validity row, and the embedded VD details array (real/dialect verbs
+    only, to keep the self-contained HTML small). neologisms is a list of
+    (root, pattern) keys to expose as a highlight toggle.
+    """
+    validity_map = validity_map or {}
+    neo_keys = set(neologisms or [])
 
     # Classify tiers and build compact data
     tier_counts = Counter()
     compact_data = []
-    for r in records:
-        tier = classify_token_tier(r)
+    details_arr = []   # VD: [gloss, dialects, msa_meanings, dialect_meanings]
+    neo_indices = []
+    for idx, r in enumerate(records):
+        key = (r.get('root', ''), r.get('pattern', ''))
+        validity = validity_map.get(key)
+        tier = classify_token_tier(r, validity)
         tier_counts[tier] += 1
         bare = r.get('tokens_bare', {})
-        compact_data.append({
+        cell = {
             'v': r.get('verb', ''),
             'b': r.get('verb_bare', ''),
             'r': r.get('root', ''),
@@ -167,10 +236,30 @@ def generate_html(records: list[dict], output_path: Path):
             'tc': bare.get('cl100k_base', -1),
             'w': r.get('weak_class') or '',
             't': tier,
-        })
+        }
+        if validity is not None and validity['status'] != 'unverified':
+            cell['val'] = 1 if validity['status'] == 'real' else 2
+            cell['vp'] = {'gold': 'g', 'llm-majority': 'm', 'llm-single': 's'}.get(
+                validity['provenance'], '')
+            d = validity.get('details') or {}
+            # Embed details only where there is something to show, and only
+            # for real/dialect verbs — keeps the payload small.
+            if validity['status'] == 'real' and (validity['gloss'] or d):
+                cell['di'] = len(details_arr)
+                details_arr.append([
+                    validity.get('gloss', ''),
+                    '|'.join(d.get('dialects', [])),
+                    d.get('msa_meanings', ''),
+                    d.get('dialect_meanings', ''),
+                ])
+        if key in neo_keys:
+            neo_indices.append(idx)
+        compact_data.append(cell)
 
     total = len(compact_data)
     data_json = json.dumps(compact_data, ensure_ascii=False, separators=(',', ':'))
+    details_json = json.dumps(details_arr, ensure_ascii=False, separators=(',', ':'))
+    neo_json = json.dumps(neo_indices, separators=(',', ':'))
 
     html = f"""<!DOCTYPE html>
 <html lang="ar">
@@ -267,7 +356,15 @@ h1 {{
   font-size: 0.78rem;
   color: var(--text-dim);
 }}
-.legend-item {{ display: flex; align-items: center; gap: 0.3rem; }}
+.legend-item {{
+  display: flex; align-items: center; gap: 0.3rem;
+  background: none; border: 1px solid transparent; border-radius: 6px;
+  padding: 0.15rem 0.45rem; cursor: pointer;
+  font: inherit; color: inherit;
+}}
+.legend-item:hover {{ border-color: rgba(27,26,22,0.25); }}
+.legend-item.off {{ opacity: 0.35; }}
+.legend-item.on {{ border-color: rgba(27,26,22,0.45); background: rgba(27,26,22,0.06); }}
 .legend-dot {{ width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }}
 
 /* ── Grid container ── */
@@ -377,15 +474,18 @@ canvas {{
     <div class="stat t0"><div class="n">{tier_counts.get(0,0):,}</div><div class="l">JAIS + o200k</div></div>
     <div class="stat t1"><div class="n">{tier_counts.get(1,0):,}</div><div class="l">JAIS only</div></div>
     <div class="stat t2"><div class="n">{tier_counts.get(2,0):,}</div><div class="l">o200k only</div></div>
+    <div class="stat t3"><div class="n">{tier_counts.get(3,0):,}</div><div class="l">Valid (no token)</div></div>
+    <div class="stat t4"><div class="n">{tier_counts.get(4,0):,}</div><div class="l">Invalid</div></div>
     <div class="stat t5"><div class="n">{tier_counts.get(5,0):,}</div><div class="l">Unverified</div></div>
   </div>
   <div class="legend">
-    <div class="legend-item"><div class="legend-dot" style="background:var(--tier0)"></div>JAIS + o200k (strongest)</div>
-    <div class="legend-item"><div class="legend-dot" style="background:var(--tier1)"></div>JAIS only</div>
-    <div class="legend-item"><div class="legend-dot" style="background:var(--tier2)"></div>o200k only (investigate)</div>
-    <div class="legend-item"><div class="legend-dot" style="background:var(--tier3)"></div>Valid (no token)</div>
-    <div class="legend-item"><div class="legend-dot" style="background:var(--tier4)"></div>Invalid</div>
-    <div class="legend-item"><div class="legend-dot" style="background:var(--tier5)"></div>Unverified</div>
+    <button class="legend-item" data-tier="0"><div class="legend-dot" style="background:var(--tier0)"></div>JAIS + o200k (strongest)</button>
+    <button class="legend-item" data-tier="1"><div class="legend-dot" style="background:var(--tier1)"></div>JAIS only</button>
+    <button class="legend-item" data-tier="2"><div class="legend-dot" style="background:var(--tier2)"></div>o200k only (investigate)</button>
+    <button class="legend-item" data-tier="3"><div class="legend-dot" style="background:var(--tier3)"></div>Valid (no token)</button>
+    <button class="legend-item" data-tier="4"><div class="legend-dot" style="background:var(--tier4)"></div>Invalid</button>
+    <button class="legend-item" data-tier="5"><div class="legend-dot" style="background:var(--tier5)"></div>Unverified</button>
+    <button class="legend-item" id="neo-toggle" hidden>⭐ Top neologisms</button>
   </div>
 </header>
 
@@ -411,10 +511,25 @@ canvas {{
 // ── Data ──
 const D = {data_json};
 const N = D.length;
+const VD = {details_json};   // [gloss, dialects, msa_meanings, dialect_meanings]
+const NEO = {neo_json};      // indices of top neologism candidates
+const VAL_NAMES = ['', 'Real', 'Not real'];
+const PROV_NAMES = {{g: 'dictionary', m: 'LLM majority', s: 'single LLM'}};
 
 // ── Tier colors ──
-const TC = ['#1A7A5A','#2B6A99','#F59F38','#1A7A5A','#B88A7E','#C9C0AD'];
+const TC = ['#1A7A5A','#2B6A99','#F59F38','#14b8a6','#B88A7E','#C9C0AD'];
 const TN = ['JAIS + o200k','JAIS only','o200k only','Valid (no token)','Invalid','Unverified'];
+
+// ── Tier filters ──
+const DIM = '#E7E2D2';
+const activeTiers = new Set([0, 1, 2, 3, 4, 5]);
+const neoSet = new Set(NEO);
+let neoMode = false;
+
+function cellVisible(i) {{
+  if (neoMode) return neoSet.has(i);
+  return activeTiers.has(D[i].t);
+}}
 
 // ── Grid config ──
 const COLS = 180;
@@ -486,7 +601,9 @@ function drawBase() {{
       const i = row * COLS + col;
       if (i >= N) break;
       const d = D[i];
-      ctx.fillStyle = tierColor(d.t);
+      // Dim, don't hide: cells keep their positions so idxAt/tooltip/modal
+      // stay valid with zero layout changes.
+      ctx.fillStyle = cellVisible(i) ? tierColor(d.t) : DIM;
       const x = col * CELL_W + CELL_W / 2;
       const y = row * CELL_H + CELL_H / 2;
       ctx.fillText(d.b, x, y);
@@ -540,8 +657,9 @@ function drawFisheye() {{
       const ox = dx * (scale - 1) * CELL_W * 0.65;
       const oy = dy * (scale - 1) * CELL_H * 0.65;
 
+      const visible = cellVisible(i);
       // Glow for large scales
-      if (scale > 2) {{
+      if (scale > 2 && visible) {{
         ctx.shadowColor = tierColor(d.t);
         ctx.shadowBlur = (scale - 1) * 3;
       }} else {{
@@ -549,7 +667,7 @@ function drawFisheye() {{
         ctx.shadowBlur = 0;
       }}
 
-      ctx.fillStyle = tierColor(d.t);
+      ctx.fillStyle = visible ? tierColor(d.t) : DIM;
       if (scale > 1.8) {{
         // Show diacriticized form when magnified enough
         ctx.fillText(d.v, cx + ox, cy + oy);
@@ -585,14 +703,17 @@ function showTooltip(i, px, py) {{
   ttVerb.textContent = d.v;
   ttVerb.style.color = tierColor(d.t);
 
+  const validityNote = d.val ? ' \\u00b7 ' + VAL_NAMES[d.val] +
+    (d.vp ? ' (' + PROV_NAMES[d.vp] + ')' : '') : '';
   if (d.t === 4) {{
-    ttInfo.textContent = 'This is a theoretically possible word that does not exist.';
+    ttInfo.textContent = 'Not a real word' + (d.vp ? ' \\u2014 per ' + PROV_NAMES[d.vp] : '') +
+      ' \\u00b7 ' + d.r + ' \\u00b7 ' + d.p;
   }} else if (d.t === 5) {{
-    ttInfo.textContent = 'Unverified \\u2014 awaiting LLM validation';
+    ttInfo.textContent = 'Unverified \\u2014 no dictionary or LLM verdict yet';
   }} else if (d.t <= 2) {{
-    ttInfo.textContent = d.r + ' (' + d.rt + ') \\u00b7 ' + TN[d.t] + ' \\u00b7 ' + d.p + (d.w ? ' \\u00b7 ' + d.w : '');
+    ttInfo.textContent = d.r + ' (' + d.rt + ') \\u00b7 ' + TN[d.t] + ' \\u00b7 ' + d.p + (d.w ? ' \\u00b7 ' + d.w : '') + validityNote;
   }} else {{
-    ttInfo.textContent = d.r + ' (' + d.rt + ') \\u00b7 ' + d.p + (d.w ? ' \\u00b7 ' + d.w : '');
+    ttInfo.textContent = d.r + ' (' + d.rt + ') \\u00b7 ' + d.p + (d.w ? ' \\u00b7 ' + d.w : '') + validityNote;
   }}
 
   // Position tooltip
@@ -667,10 +788,18 @@ wrap.addEventListener('click', (e) => {{
     ['Weak Class', d.w || 'n/a'],
     ['Bare Form', d.b],
     ['Tier', TN[d.t]],
+    ['Validity', d.val ? VAL_NAMES[d.val] + (d.vp ? ' (' + PROV_NAMES[d.vp] + ')' : '') : 'Unverified'],
     ['JAIS tokens (bare)', d.tj === -1 ? 'N/A' : d.tj],
     ['o200k tokens (bare)', d.to === -1 ? 'N/A' : d.to],
     ['cl100k tokens (bare)', d.tc === -1 ? 'N/A' : d.tc],
   ];
+  if (d.di !== undefined) {{
+    const det = VD[d.di];
+    if (det[0]) fields.push(['Meaning', det[0]]);
+    if (det[1]) fields.push(['Dialects', det[1]]);
+    if (det[2] && det[2] !== det[0]) fields.push(['MSA meaning', det[2]]);
+    if (det[3]) fields.push(['Dialect meaning', det[3]]);
+  }}
   for (const [label, val] of fields) {{
     const lbl = document.createElement('div');
     lbl.className = 'm-label';
@@ -684,12 +813,18 @@ wrap.addEventListener('click', (e) => {{
   }}
 
   const method = modal.querySelector('.m-method');
+  const provTail = d.vp === 'g'
+    ? 'Verdict source: machine-readable dictionaries (Arramooz / Wiktionary).'
+    : d.vp === 'm' ? 'Verdict source: majority of local LLM judges.'
+    : d.vp === 's' ? 'Verdict source: a single LLM judge (provisional).' : '';
   if (d.t === 4) {{
-    method.innerHTML = '<strong>Methodology:</strong> This word was generated by combinatorially applying all 28 Arabic consonants to the trilateral root pattern (\\u0641\\u064e\\u0639\\u064e\\u0644\\u064e). It was then checked against multiple tokenizers (JAIS, a specialized Arabic language model tokenizer, and tiktoken\\'s o200k_base for GPT-4o). Finally, frontier LLMs were consulted to verify whether the word exists in Modern Standard Arabic or any dialect. This particular combination does not correspond to any known Arabic word.';
+    method.innerHTML = '<strong>Methodology:</strong> This candidate was generated by combinatorially applying all 28 Arabic consonants to the Form I templates and checked against dictionaries and LLM judges. It does not correspond to a known Arabic word. ' + provTail;
+  }} else if (d.t === 3) {{
+    method.innerHTML = '<strong>Methodology:</strong> A real Arabic verb that no tokenizer in the panel encodes as a single token \\u2014 the coverage gap this project measures. ' + provTail;
   }} else if (d.t === 5) {{
-    method.innerHTML = '<strong>Methodology:</strong> This candidate was generated combinatorially from all valid Arabic root patterns. Tokenizer analysis shows it as <strong>' + d.tj + '</strong> token(s) in JAIS and <strong>' + d.to + '</strong> in o200k. LLM validation has not yet been performed \\u2014 once complete, this entry will show whether the word exists in MSA or any Arabic dialect.';
+    method.innerHTML = '<strong>Methodology:</strong> Generated combinatorially from all valid root patterns. Tokenizer analysis shows <strong>' + d.tj + '</strong> token(s) in JAIS and <strong>' + d.to + '</strong> in o200k. No dictionary or LLM verdict yet \\u2014 validation is pending or was inconclusive.';
   }} else {{
-    method.innerHTML = '<strong>Tokenizer signal:</strong> Recognized as a single token in <strong>' + TN[d.t] + '</strong>. Words that tokenizers encode as single tokens are typically frequent and well-established in the training corpus. Full LLM validation pending.';
+    method.innerHTML = '<strong>Tokenizer signal:</strong> Recognized as a single token in <strong>' + TN[d.t] + '</strong>. Words that tokenizers encode as single tokens are typically frequent and well-established in the training corpus. ' + (d.val ? 'Validity: ' + VAL_NAMES[d.val] + '. ' + provTail : 'Validation pending.');
   }}
 
   backdrop.classList.add('open');
@@ -703,6 +838,48 @@ modal.querySelector('.close').addEventListener('click', () => backdrop.classList
 document.addEventListener('keydown', (e) => {{
   if (e.key === 'Escape') backdrop.classList.remove('open');
 }});
+
+// ── Tier filter buttons ──
+document.querySelectorAll('.legend-item[data-tier]').forEach((btn) => {{
+  btn.addEventListener('click', (e) => {{
+    const t = parseInt(btn.dataset.tier, 10);
+    neoMode = false;
+    document.getElementById('neo-toggle').classList.remove('on');
+    if (e.shiftKey) {{
+      // Shift-click solos the tier (click again with shift to restore all)
+      if (activeTiers.size === 1 && activeTiers.has(t)) {{
+        for (let k = 0; k <= 5; k++) activeTiers.add(k);
+      }} else {{
+        activeTiers.clear();
+        activeTiers.add(t);
+      }}
+    }} else {{
+      if (activeTiers.has(t)) activeTiers.delete(t); else activeTiers.add(t);
+    }}
+    document.querySelectorAll('.legend-item[data-tier]').forEach((b) => {{
+      b.classList.toggle('off', !activeTiers.has(parseInt(b.dataset.tier, 10)));
+    }});
+    dirty = true;
+  }});
+}});
+
+const neoToggle = document.getElementById('neo-toggle');
+if (NEO.length > 0) {{
+  neoToggle.hidden = false;
+  neoToggle.addEventListener('click', () => {{
+    neoMode = !neoMode;
+    neoToggle.classList.toggle('on', neoMode);
+    document.querySelectorAll('.legend-item[data-tier]').forEach((b) => {{
+      b.classList.toggle('off', neoMode);
+    }});
+    if (!neoMode) {{
+      document.querySelectorAll('.legend-item[data-tier]').forEach((b) => {{
+        b.classList.toggle('off', !activeTiers.has(parseInt(b.dataset.tier, 10)));
+      }});
+    }}
+    dirty = true;
+  }});
+}}
 
 // ── Init ──
 document.fonts.ready.then(() => {{

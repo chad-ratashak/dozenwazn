@@ -10,7 +10,7 @@ dependencies = [
     "python-bidi",
     "pydantic",
     "click",
-    "transformers>=5.5.0",
-    "torch>=2.11.0",
+    "tokenizers>=0.20",
     "huggingface-hub[cli]>=1.9.0",
+    "httpx>=0.27.0",
 ]

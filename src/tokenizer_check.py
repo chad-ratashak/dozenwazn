@@ -12,6 +12,12 @@ Findings so far:
   - JAIS (Arabic-optimized, 32K Arabic tokens): common bare roots are
     single tokens; tashkeel explodes every verb into 6-9 tokens since
     each diacritical mark becomes its own token
+
+Security model: open-source tokenizers are loaded ONLY from vendor/tokenizers/
+as inert data files via the `tokenizers` library — no transformers, no
+trust_remote_code, no network access from this module. Every file is verified
+against the committed SHA256SUMS.json manifest before loading; a mismatch
+aborts. Run `uv run python -m src.cli vendor` once to fetch the files.
 """
 
 import json
@@ -20,6 +26,10 @@ import sys
 from pathlib import Path
 
 import tiktoken
+
+from src.vendor_tokenizers import (
+    MANIFEST_PATH, TOKENIZER_REGISTRY, VENDOR_DIR, load_manifest, sha256_file,
+)
 
 # ── Tiktoken encodings ───────────────────────────────────────────────
 TIKTOKEN_ENCODINGS = {
@@ -36,18 +46,81 @@ def strip_tashkeel(text: str) -> str:
     return TASHKEEL_PATTERN.sub('', text)
 
 
-def _load_jais_tokenizer():
-    """Try to load the JAIS tokenizer. Returns None if unavailable."""
-    try:
-        from transformers import AutoTokenizer
-        tok = AutoTokenizer.from_pretrained(
-            'inceptionai/jais-13b',
-            trust_remote_code=True,
-        )
-        return tok
-    except Exception as e:
-        print(f"  [JAIS tokenizer unavailable: {e}]", file=sys.stderr)
-        return None
+class VendoredTokenizer:
+    """Token counter backed by vendored data files. Never executes repo code."""
+
+    _UNK_TOKENS = ('[UNK]', '<unk>')
+
+    def __init__(self, name: str, directory: Path, files: list[str]):
+        from tokenizers import Tokenizer
+
+        self.name = name
+        if 'tokenizer.json' in files:
+            self._tok = Tokenizer.from_file(str(directory / 'tokenizer.json'))
+        elif 'vocab.txt' in files:
+            # WordPiece vocab without a serialized tokenizer.json (CAMeLBERT).
+            # strip_accents=False so tashkeel isn't silently removed.
+            from tokenizers.implementations import BertWordPieceTokenizer
+            self._tok = BertWordPieceTokenizer(
+                str(directory / 'vocab.txt'),
+                lowercase=False,
+                strip_accents=False,
+            )
+        else:
+            raise ValueError(f"{name}: no loadable tokenizer data in {files}")
+
+        self._unk_id = None
+        for unk in self._UNK_TOKENS:
+            tid = self._tok.token_to_id(unk)
+            if tid is not None:
+                self._unk_id = tid
+                break
+
+    def count(self, text: str) -> int | None:
+        """Token count for text, or None if it collapsed to a lone UNK token.
+
+        A single [UNK] means the tokenizer has no coverage at all — counting
+        it as a "single-token hit" would be a false positive.
+        """
+        ids = self._tok.encode(text, add_special_tokens=False).ids
+        if self._unk_id is not None and ids == [self._unk_id]:
+            return None
+        return len(ids)
+
+
+def load_vendored_tokenizers() -> dict[str, 'VendoredTokenizer']:
+    """Load every vendored tokenizer, verifying file hashes against the manifest.
+
+    Missing files are skipped with a note (run `vendor` to fetch them);
+    a hash MISMATCH aborts — that's corruption or tampering, not a soft error.
+    """
+    manifest = load_manifest()
+    if not manifest:
+        print(f"  [no vendored tokenizers — run 'uv run python -m src.cli vendor' "
+              f"to enable JAIS/Qwen/AraBERT/etc.]", file=sys.stderr)
+        return {}
+
+    loaded = {}
+    for name, entry in sorted(manifest.items()):
+        directory = VENDOR_DIR / name
+        files = list(entry.get('files', {}))
+        missing = [f for f in files if not (directory / f).exists()]
+        if missing:
+            print(f"  [{name}: files missing ({', '.join(missing)}) — "
+                  f"run vendor to fetch, skipping]", file=sys.stderr)
+            continue
+        for fname, recorded in entry['files'].items():
+            actual = sha256_file(directory / fname)
+            if actual != recorded:
+                raise RuntimeError(
+                    f"SHA-256 mismatch for {directory / fname}: manifest says "
+                    f"{recorded[:16]}…, file is {actual[:16]}…. Refusing to load. "
+                    f"If you intentionally re-vendored, commit the new manifest; "
+                    f"otherwise investigate before proceeding."
+                )
+        loaded[name] = VendoredTokenizer(name, directory, files)
+        print(f"  {name} tokenizer loaded (verified).", file=sys.stderr)
+    return loaded
 
 
 def check_tokenization(candidates_path: Path, output_path: Path):
@@ -55,11 +128,8 @@ def check_tokenization(candidates_path: Path, output_path: Path):
     # Load tiktoken encoders
     tiktoken_encoders = {name: tiktoken.get_encoding(name) for name in TIKTOKEN_ENCODINGS}
 
-    # Try loading JAIS
-    jais_tokenizer = _load_jais_tokenizer()
-    has_jais = jais_tokenizer is not None
-    if has_jais:
-        print("  JAIS tokenizer loaded.", file=sys.stderr)
+    # Load vendored open-source tokenizers (data-only, hash-verified)
+    vendored = load_vendored_tokenizers()
 
     count = 0
     with open(candidates_path, 'r', encoding='utf-8') as fin, \
@@ -76,10 +146,10 @@ def check_tokenization(candidates_path: Path, output_path: Path):
                 tokens_diac[enc_name] = len(encoder.encode(verb))
                 tokens_bare[enc_name] = len(encoder.encode(bare))
 
-            # JAIS: diacriticized and bare
-            if has_jais:
-                tokens_diac['jais'] = len(jais_tokenizer.encode(verb, add_special_tokens=False))
-                tokens_bare['jais'] = len(jais_tokenizer.encode(bare, add_special_tokens=False))
+            # Vendored tokenizers: diacriticized and bare
+            for name, tok in vendored.items():
+                tokens_diac[name] = tok.count(verb)
+                tokens_bare[name] = tok.count(bare)
 
             result = {
                 **candidate,
@@ -99,7 +169,7 @@ def check_tokenization(candidates_path: Path, output_path: Path):
 
 
 def summarize(output_path: Path):
-    """Print summary statistics."""
+    """Print summary statistics, including fertility (mean tokens per verb)."""
     # Detect all encoder names from first line
     with open(output_path, 'r', encoding='utf-8') as f:
         first = json.loads(f.readline())
@@ -107,12 +177,14 @@ def summarize(output_path: Path):
 
     encoder_labels = {
         **TIKTOKEN_ENCODINGS,
-        'jais': 'JAIS-13B (Arabic-optimized)',
+        **{name: spec['label'] for name, spec in TOKENIZER_REGISTRY.items()},
     }
 
     total = 0
     single_diac_by_enc = {name: 0 for name in all_encoders}
     single_bare_by_enc = {name: 0 for name in all_encoders}
+    token_sum_bare = {name: 0 for name in all_encoders}
+    token_n_bare = {name: 0 for name in all_encoders}
     single_diac_any = 0
     single_bare_any = 0
 
@@ -127,8 +199,12 @@ def summarize(output_path: Path):
             for enc in all_encoders:
                 if data['tokens_diacriticized'].get(enc) == 1:
                     single_diac_by_enc[enc] += 1
-                if data['tokens_bare'].get(enc) == 1:
+                bare_count = data['tokens_bare'].get(enc)
+                if bare_count == 1:
                     single_bare_by_enc[enc] += 1
+                if bare_count is not None:
+                    token_sum_bare[enc] += bare_count
+                    token_n_bare[enc] += 1
 
     print(f"\nTokenizer Analysis Summary:", file=sys.stderr)
     print(f"  Total candidates: {total:,}", file=sys.stderr)
@@ -145,7 +221,9 @@ def summarize(output_path: Path):
     for enc in all_encoders:
         label = encoder_labels.get(enc, enc)
         c = single_bare_by_enc[enc]
-        print(f"    {enc} ({label}): {c:,} ({100*c/total:.1f}%)", file=sys.stderr)
+        n = token_n_bare[enc]
+        fertility = f", fertility {token_sum_bare[enc]/n:.2f} tok/verb" if n else ""
+        print(f"    {enc} ({label}): {c:,} ({100*c/total:.1f}%){fertility}", file=sys.stderr)
 
 
 if __name__ == '__main__':

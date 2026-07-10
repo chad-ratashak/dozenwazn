@@ -1,0 +1,30 @@
+{
+  "arabert": {
+    "commit": "97522efce17efa33036ac619802d5cec238dcad9",
+    "files": {
+      "tokenizer.json": "0ed16c2227882b6db87ce35947404b2b62b5d795ef2338781e944ba5d782fd08"
+    },
+    "repo": "aubmindlab/bert-base-arabertv2"
+  },
+  "camelbert": {
+    "commit": "9be352797bdf28a9ae21e2ae582aaaca7abdb22d",
+    "files": {
+      "vocab.txt": "1df5f8da6ad6c56153c7a974c0b149bb7a0a6e332bcfa795c99deee6c1136ce2"
+    },
+    "repo": "CAMeL-Lab/bert-base-arabic-camelbert-mix"
+  },
+  "jais": {
+    "commit": "0d5eb87f91e6577dac17bc319eee940fb875b899",
+    "files": {
+      "tokenizer.json": "0cb856e46b8f66f723d634fefba242eadd8d0fb87bbb1a1a00d6653081047ddf"
+    },
+    "repo": "inceptionai/jais-13b"
+  },
+  "qwen2.5": {
+    "commit": "d149729398750b98c0af14eb82c78cfe92750796",
+    "files": {
+      "tokenizer.json": "c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539"
+    },
+    "repo": "Qwen/Qwen2.5-7B"
+  }
+}

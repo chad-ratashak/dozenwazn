@@ -13,3 +13,9 @@ wheels/
 .port
 *.command
 data/
+.DS_Store
+
+# Vendored tokenizer data files — re-fetchable via `python -m src.cli vendor`,
+# integrity-checked against the committed SHA256SUMS.json manifest
+vendor/tokenizers/*
+!vendor/tokenizers/SHA256SUMS.json

@@ -336,5 +336,90 @@ def html():
     click.echo(f"Interactive HTML → {html_path}", err=True)
 
 
+@cli.group()
+def analyze():
+    """Cross-model agreement, coverage, and neologism analysis.
+
+    Reads the filled model CSVs, data/gold.csv, and
+    data/tokenizer_analysis.jsonl; writes artifacts to data/analysis/.
+    """
+    pass
+
+
+@analyze.command()
+@click.option('--view', type=click.Choice(['hallucinated', 'rare-real']),
+              default=None,
+              help='Also print filtered rows: hallucinated (gold unattested '
+                   'but >=1 model true) or rare-real (gold real but majority '
+                   'false)')
+def agreement(view):
+    """Pairwise raw agreement + Cohen kappa, Fleiss kappa, marginals.
+
+    Writes data/analysis/agreement.json and disagreements.jsonl.
+    """
+    from src.analysis import run_agreement
+    run_agreement(DATA_DIR, view=view, echo=click.echo)
+
+
+@analyze.command()
+def coverage():
+    """Single-token coverage of consensus-real verbs + tokenizer ghosts.
+
+    Works with gold alone when no model CSVs are populated. Writes
+    data/analysis/coverage.json and ghosts.jsonl.
+    """
+    from src.analysis import run_coverage
+    tok_path = DATA_DIR / 'tokenizer_analysis.jsonl'
+    if not tok_path.exists():
+        click.echo("Run 'tokenize' first.", err=True)
+        sys.exit(1)
+    run_coverage(DATA_DIR, echo=click.echo)
+
+
+@analyze.command()
+@click.option('--include-unverified', is_flag=True,
+              help='Also include consensus-unverified candidates (corpus-only '
+                   'gold, tied votes)')
+@click.option('--tokenizer', default=None,
+              help='Require single-token in this specific tokenizer '
+                   '(default: any)')
+@click.option('--top', default=50, type=int, show_default=True,
+              help='Rows to print in the table')
+def neologisms(include_unverified, tokenizer, top):
+    """Unattested single-token candidates ranked by plausibility.
+
+    Writes data/analysis/neologisms.jsonl.
+    """
+    from src.analysis import print_neologism_table, run_neologisms
+    tok_path = DATA_DIR / 'tokenizer_analysis.jsonl'
+    if not tok_path.exists():
+        click.echo("Run 'tokenize' first.", err=True)
+        sys.exit(1)
+    try:
+        rows = run_neologisms(DATA_DIR, include_unverified=include_unverified,
+                              tokenizer=tokenizer, top=top, echo=click.echo)
+    except ValueError as e:
+        click.echo(str(e), err=True)
+        sys.exit(1)
+    print_neologism_table(rows, top=top)
+
+
+@analyze.command()
+@click.option('--markdown', is_flag=True,
+              help='Emit a ready-to-paste markdown table instead of the '
+                   'plain summary')
+def tokenizers(markdown):
+    """Per-tokenizer single-token counts (bare + diacriticized) + fertility.
+
+    Writes data/analysis/tokenizers.json.
+    """
+    from src.analysis import run_tokenizers
+    tok_path = DATA_DIR / 'tokenizer_analysis.jsonl'
+    if not tok_path.exists():
+        click.echo("Run 'tokenize' first.", err=True)
+        sys.exit(1)
+    run_tokenizers(DATA_DIR, markdown=markdown, echo=click.echo)
+
+
 if __name__ == '__main__':
     cli()

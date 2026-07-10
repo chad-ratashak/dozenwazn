@@ -56,11 +56,18 @@ CONSONANTS = [
 ]
 
 # ── Diacritics ───────────────────────────────────────────────────────
-FATHA  = '\u064e'   # َ  a
-KASRA  = '\u0650'   # ِ  i
-DAMMA  = '\u064f'   # ُ  u
-SUKUN  = '\u0652'   # ْ  no vowel
-SHADDA = '\u0651'   # ّ  gemination
+# Canonical definitions live in morphophonology; re-exported here for
+# existing consumers.
+from src.morphophonology import (  # noqa: E402
+    DAMMA,
+    FATHA,
+    KASRA,
+    SHADDA,
+    SUKUN,
+    build_form1_past_3ms,
+    classify_root,
+)
+from src import plausibility  # noqa: E402
 
 
 # ── Root generators ──────────────────────────────────────────────────
@@ -123,9 +130,17 @@ def generate_quadrilateral_roots_xyzn():
 # ── Form builders ────────────────────────────────────────────────────
 
 def build_form1_trilateral(r1, r2, r3, middle_vowel=FATHA):
-    """
-    Build a Form I trilateral past tense verb: C1aC2vC3a
-    If r2 == r3 (XYY root), apply shadda: C1aC2ّv
+    """Correct Form I past-3ms surface (weak radicals, hamza seating,
+    gemination handled in morphophonology)."""
+    return build_form1_past_3ms(r1, r2, r3, middle_vowel)
+
+
+def build_form1_trilateral_naive(r1, r2, r3, middle_vowel=FATHA):
+    """The original CaCaCa template render, preserved verbatim.
+
+    Misrenders weak/hamzated roots (قول → قَوَلَ) and gives geminates the
+    middle vowel after shadda (مَدِّ). Kept only to fill verb_naive — the
+    join key for data produced before the weak-radical fix.
     """
     if r2 == r3:
         return r1 + FATHA + r2 + SHADDA + middle_vowel
@@ -165,19 +180,32 @@ def generate_all_candidates(include_xyzn=False):
     # Trilateral forms
     for r1, r2, r3, root_type in generate_trilateral_roots():
         root = extract_root([r1, r2, r3])
-        for mid_v, pattern_label in TRILATERAL_VOWELS:
-            verb = build_form1_trilateral(r1, r2, r3, mid_v)
+        weak_class, hamza_pos = classify_root((r1, r2, r3))
+        plaus = plausibility.score_root(root, root_type)
+        # surface_collapsed is per cell: True when this cell's surface is
+        # shared with another vocalization of the same root (hollow and
+        # geminate roots collapse fully; lexical exceptions like عَوِرَ leave
+        # one cell distinct while the other two still share).
+        surfaces = [build_form1_past_3ms(r1, r2, r3, mv) for mv, _ in TRILATERAL_VOWELS]
+        for (mid_v, pattern_label), verb in zip(TRILATERAL_VOWELS, surfaces):
             yield VerbCandidate(
                 root=root,
                 root_type=root_type,
                 arity=3,
                 pattern=pattern_label,
                 verb=verb,
+                verb_naive=build_form1_trilateral_naive(r1, r2, r3, mid_v),
+                weak_class=weak_class,
+                hamza_positions=hamza_pos,
+                surface_collapsed=surfaces.count(verb) > 1,
+                plausibility=plaus,
             )
 
-    # Quadrilateral XYXY forms
+    # Quadrilateral XYXY forms (surfaces stay on the naive template — v1
+    # is tag-only for quads; see morphophonology module docstring)
     for r1, r2, r3, r4, root_type in generate_quadrilateral_roots_xyxy():
         root = extract_root([r1, r2, r3, r4])
+        weak_class, hamza_pos = classify_root((r1, r2, r3, r4))
         verb = build_form1_quadrilateral(r1, r2, r3, r4)
         yield VerbCandidate(
             root=root,
@@ -185,12 +213,18 @@ def generate_all_candidates(include_xyzn=False):
             arity=4,
             pattern=QUADRILATERAL_PATTERN_XYXY,
             verb=verb,
+            verb_naive=verb,
+            weak_class=weak_class,
+            hamza_positions=hamza_pos,
+            surface_collapsed=False,
+            plausibility=plausibility.score_root(root, root_type),
         )
 
     # Quadrilateral XYZN forms (deferred by default)
     if include_xyzn:
         for r1, r2, r3, r4, root_type in generate_quadrilateral_roots_xyzn():
             root = extract_root([r1, r2, r3, r4])
+            weak_class, hamza_pos = classify_root((r1, r2, r3, r4))
             verb = build_form1_quadrilateral(r1, r2, r3, r4)
             yield VerbCandidate(
                 root=root,
@@ -198,6 +232,11 @@ def generate_all_candidates(include_xyzn=False):
                 arity=4,
                 pattern=QUADRILATERAL_PATTERN_XYZN,
                 verb=verb,
+                verb_naive=verb,
+                weak_class=weak_class,
+                hamza_positions=hamza_pos,
+                surface_collapsed=False,
+                plausibility=plausibility.score_root(root, root_type),
             )
 
 

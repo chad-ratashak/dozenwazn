@@ -165,6 +165,7 @@ def generate_html(records: list[dict], output_path: Path):
             'tj': bare.get('jais', -1),
             'to': bare.get('o200k_base', -1),
             'tc': bare.get('cl100k_base', -1),
+            'w': r.get('weak_class') or '',
             't': tier,
         })
 
@@ -589,9 +590,9 @@ function showTooltip(i, px, py) {{
   }} else if (d.t === 5) {{
     ttInfo.textContent = 'Unverified \\u2014 awaiting LLM validation';
   }} else if (d.t <= 2) {{
-    ttInfo.textContent = d.r + ' (' + d.rt + ') \\u00b7 ' + TN[d.t] + ' \\u00b7 ' + d.p;
+    ttInfo.textContent = d.r + ' (' + d.rt + ') \\u00b7 ' + TN[d.t] + ' \\u00b7 ' + d.p + (d.w ? ' \\u00b7 ' + d.w : '');
   }} else {{
-    ttInfo.textContent = d.r + ' (' + d.rt + ') \\u00b7 ' + d.p;
+    ttInfo.textContent = d.r + ' (' + d.rt + ') \\u00b7 ' + d.p + (d.w ? ' \\u00b7 ' + d.w : '');
   }}
 
   // Position tooltip
@@ -663,6 +664,7 @@ wrap.addEventListener('click', (e) => {{
     ['Root Type', d.rt],
     ['Arity', d.a],
     ['Pattern', d.p],
+    ['Weak Class', d.w || 'n/a'],
     ['Bare Form', d.b],
     ['Tier', TN[d.t]],
     ['JAIS tokens (bare)', d.tj === -1 ? 'N/A' : d.tj],

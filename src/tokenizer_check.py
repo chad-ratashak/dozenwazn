@@ -187,15 +187,22 @@ def summarize(output_path: Path):
     token_n_bare = {name: 0 for name in all_encoders}
     single_diac_any = 0
     single_bare_any = 0
+    distinct_bare: set[str] = set()
+    weak_totals: dict[str, int] = {}
+    weak_single_bare: dict[str, int] = {}
 
     with open(output_path, 'r', encoding='utf-8') as f:
         for line in f:
             data = json.loads(line)
             total += 1
+            distinct_bare.add(data['verb_bare'])
+            wc = data.get('weak_class') or 'untagged'
+            weak_totals[wc] = weak_totals.get(wc, 0) + 1
             if data['single_token_diacriticized']:
                 single_diac_any += 1
             if data['single_token_bare']:
                 single_bare_any += 1
+                weak_single_bare[wc] = weak_single_bare.get(wc, 0) + 1
             for enc in all_encoders:
                 if data['tokens_diacriticized'].get(enc) == 1:
                     single_diac_by_enc[enc] += 1
@@ -208,6 +215,9 @@ def summarize(output_path: Path):
 
     print(f"\nTokenizer Analysis Summary:", file=sys.stderr)
     print(f"  Total candidates: {total:,}", file=sys.stderr)
+    # Collapsed hollow/geminate triples share one surface — this line keeps
+    # any double counting visible next to the per-row percentages.
+    print(f"  Distinct bare surfaces: {len(distinct_bare):,} of {total:,}", file=sys.stderr)
 
     print(f"\n  WITH tashkeel (diacriticized):", file=sys.stderr)
     print(f"    Single-token in any: {single_diac_any:,} ({100*single_diac_any/total:.1f}%)", file=sys.stderr)
@@ -224,6 +234,12 @@ def summarize(output_path: Path):
         n = token_n_bare[enc]
         fertility = f", fertility {token_sum_bare[enc]/n:.2f} tok/verb" if n else ""
         print(f"    {enc} ({label}): {c:,} ({100*c/total:.1f}%){fertility}", file=sys.stderr)
+
+    from src.stats import fmt_rate
+    print(f"\n  Single-token (bare, any tokenizer) by weak class:", file=sys.stderr)
+    for wc in sorted(weak_totals, key=lambda w: -weak_totals[w]):
+        k = weak_single_bare.get(wc, 0)
+        print(f"    {wc}: {fmt_rate(k, weak_totals[wc])}", file=sys.stderr)
 
 
 if __name__ == '__main__':

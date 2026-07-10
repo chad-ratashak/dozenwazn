@@ -100,6 +100,43 @@ def vendor(refresh, only):
 
 
 @cli.command()
+@click.option('--refresh', is_flag=True,
+              help='Re-download even if already vendored and verified')
+@click.option('--only', default=None,
+              help='Comma-separated lexicon names (default: all in registry)')
+def lexica(refresh, only):
+    """Fetch dictionary/corpus lexicon data files into vendor/lexica/.
+
+    Downloads are hash-recorded in vendor/lexica/SHA256SUMS.json — commit
+    that manifest. This is the only command that touches the network for
+    lexicon assets.
+    """
+    from src.vendor_lexica import vendor as vendor_lexica
+    names = [n.strip() for n in only.split(',')] if only else None
+    try:
+        vendor_lexica(names, refresh=refresh)
+    except ValueError as e:
+        click.echo(str(e), err=True)
+        sys.exit(1)
+
+
+@cli.command()
+@click.option('--freq-threshold', default=3, type=int,
+              help='Corpus count needed for attested_corpus_only (default 3)')
+def gold(freq_threshold):
+    """Build the dictionary/corpus gold column → data/gold.csv.
+
+    Requires vendored lexica (run 'lexica' first) and candidates.jsonl.
+    """
+    from src.gold import build_gold
+    candidates = DATA_DIR / 'candidates.jsonl'
+    if not candidates.exists():
+        click.echo("Run 'generate' first.", err=True)
+        sys.exit(1)
+    build_gold(candidates, DATA_DIR / 'gold.csv', freq_threshold)
+
+
+@cli.command()
 def tokenize():
     """Run tokenizer analysis on candidates (with and without tashkeel).
 
@@ -161,7 +198,9 @@ def display():
 @click.option('--dry-run', is_flag=True, help='Show batch count and ETA without calling Ollama')
 @click.option('--backup-every', default=50, type=int,
               help='Snapshot the CSV to data/backups/ every N batches (0 disables; default 50)')
-def validate(models, batch_size, do_pull, dry_run, backup_every):
+@click.option('--order', type=click.Choice(['plausibility', 'input']), default='plausibility',
+              help='Batch order: most-plausible roots first (default) or input order')
+def validate(models, batch_size, do_pull, dry_run, backup_every, order):
     """Validate verb candidates using local LLMs via Ollama."""
     from src.validate_ollama import (
         DEFAULT_OLLAMA_MODELS, check_ollama_health, pull_model,
@@ -202,7 +241,7 @@ def validate(models, batch_size, do_pull, dry_run, backup_every):
                 click.echo(f"Failed to pull {tag}. Skipping {name}.", err=True)
 
     candidates = load_candidates(candidates_path)
-    validate_all(model_map, candidates, DATA_DIR, batch_size, dry_run, backup_every)
+    validate_all(model_map, candidates, DATA_DIR, batch_size, dry_run, backup_every, order)
 
 
 @cli.command()

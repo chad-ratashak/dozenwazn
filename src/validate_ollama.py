@@ -139,7 +139,10 @@ def classify_batch(
     logger: logging.Logger,
 ) -> list[ValidationResult]:
     """Send a batch of verbs to Ollama and parse the response."""
-    verb_list = [v["verb"] for v in verbs]
+    # Collapsed hollow/geminate triples share one surface — send each
+    # distinct string once; update_csv fans the verdict back out to every
+    # matching row.
+    verb_list = list(dict.fromkeys(v["verb"] for v in verbs))
     user_msg = f"Classify these Arabic verbs:\n{json.dumps(verb_list, ensure_ascii=False)}"
 
     payload = {
@@ -306,8 +309,13 @@ def _to_bool(val) -> bool | None:
 # ── CSV I/O ──
 
 
-def load_csv_progress(csv_path: Path) -> set[str]:
-    """Return set of verbs that have already been validated (non-empty EXISTS? column)."""
+def load_csv_progress(csv_path: Path) -> set[tuple[str, str]]:
+    """(ROOT, PATTERN) keys already validated (non-empty EXISTS? column).
+
+    Keyed like the merge/import machinery — NOT by VERB: distinct roots can
+    share a surface (قول/قيل → قَالَ), and keying done-ness by surface would
+    permanently skip unfilled rows that happen to collide with a filled one.
+    """
     done = set()
     if not csv_path.exists():
         return done
@@ -316,7 +324,7 @@ def load_csv_progress(csv_path: Path) -> set[str]:
         reader = csv.DictReader(f)
         for row in reader:
             if row.get("EXISTS?", "").strip():
-                done.add(row["VERB"])
+                done.add((row["ROOT"], row["PATTERN"]))
     return done
 
 
@@ -326,22 +334,25 @@ def load_csv_rows(csv_path: Path) -> list[dict]:
         return list(csv.DictReader(f))
 
 
-def update_csv(csv_path: Path, results: list[ValidationResult]):
+def update_csv(csv_path: Path, results: list[ValidationResult]) -> int:
     """Update CSV rows matching the given validation results.
 
     Matches by VERB string: an LLM judgment is about the surface form, so
     every row sharing that surface (collapsed hollow/geminate triples, and
     cross-root collisions like قول/قيل → قَالَ) receives the same verdict.
+    Returns the number of rows written.
     """
     assert_csv_schema(csv_path)
     rows = load_csv_rows(csv_path)
     result_map = {r.verb: r for r in results}
 
+    updated = 0
     for row in rows:
         verb = row["VERB"]
         if verb in result_map:
             r = result_map[verb]
             if r.exists is not None:
+                updated += 1
                 row["EXISTS?"] = str(r.exists)
                 row["DIALECT_ONLY?"] = str(r.dialect_only) if r.dialect_only is not None else ""
                 row["LIST_OF_DIALECTS"] = "|".join(r.list_of_dialects) if r.list_of_dialects else ""
@@ -356,6 +367,7 @@ def update_csv(csv_path: Path, results: list[ValidationResult]):
         writer.writeheader()
         writer.writerows(rows)
     tmp_path.rename(csv_path)
+    return updated
 
 
 def ensure_csv_exists(csv_path: Path, candidates: list[dict]):
@@ -393,6 +405,7 @@ def validate_model(
     data_dir: Path,
     batch_size: int = 25,
     backup_every: int = 50,
+    order: str = "plausibility",
 ):
     """Run full validation pipeline for one model."""
     csv_path = data_dir / f"{model_name}.csv"
@@ -405,7 +418,27 @@ def validate_model(
 
     # Check what's already done
     done = load_csv_progress(csv_path)
-    remaining = [c for c in candidates if c["verb"] not in done]
+    remaining = [c for c in candidates if (c["root"], c["pattern"]) not in done]
+
+    if order == "plausibility":
+        # Front-load the candidates most likely to be real so a partial or
+        # interrupted run still yields a maximally useful attested sample.
+        # Root-level score + root tie-break keeps whole-root grouping intact
+        # for build_batches; key-set resume is order-independent.
+        from src.plausibility import sort_candidates_for_validation
+        remaining = sort_candidates_for_validation(remaining)
+
+    # Run-level surface dedupe: an LLM judgment is per surface, and
+    # update_csv fans it out to every matching row — sending قَالَ once
+    # covers all six قول/قيل rows. Without this, cross-root shared surfaces
+    # land in different batches and get re-queried (last writer wins).
+    seen_surfaces: set[str] = set()
+    deduped = []
+    for c in remaining:
+        if c["verb"] not in seen_surfaces:
+            seen_surfaces.add(c["verb"])
+            deduped.append(c)
+    remaining = deduped
 
     if not remaining:
         console.print(f"  [green]All {len(candidates):,} verbs already validated![/green]")
@@ -440,8 +473,9 @@ def validate_model(
                 # Filter out results where we got no answer (exists=None) — don't save those
                 valid_results = [r for r in results if r.exists is not None]
                 if valid_results:
-                    update_csv(csv_path, valid_results)
-                    total_validated += len(valid_results)
+                    # Count rows actually written (surface verdicts fan out
+                    # to every row sharing the surface), not surfaces sent.
+                    total_validated += update_csv(csv_path, valid_results)
 
                 if backup_every > 0 and batch_num % backup_every == 0:
                     backup_csv(csv_path, tag='run', keep=5)
@@ -466,6 +500,7 @@ def validate_all(
     batch_size: int = 25,
     dry_run: bool = False,
     backup_every: int = 50,
+    order: str = "plausibility",
 ):
     """Run validation for all specified models sequentially."""
     for model_name, model_tag in models.items():
@@ -476,13 +511,25 @@ def validate_all(
         csv_path = data_dir / f"{model_name}.csv"
         ensure_csv_exists(csv_path, candidates)
         done = load_csv_progress(csv_path)
-        remaining = len(candidates) - len(done)
-        batches_needed = len(build_batches(
-            [c for c in candidates if c["verb"] not in done],
-            batch_size,
-        ))
+        remaining_list = [c for c in candidates if (c["root"], c["pattern"]) not in done]
+        # Mirror validate_model's actual batching (sort + surface dedupe) so
+        # the dry-run batch count and ETA match what a real run executes.
+        if order == "plausibility":
+            from src.plausibility import sort_candidates_for_validation
+            remaining_list = sort_candidates_for_validation(remaining_list)
+        seen: set[str] = set()
+        deduped_list = []
+        for c in remaining_list:
+            if c["verb"] not in seen:
+                seen.add(c["verb"])
+                deduped_list.append(c)
+        batches_needed = len(build_batches(deduped_list, batch_size))
 
-        console.print(f"  Total: {len(candidates):,} | Done: {len(done):,} | Remaining: {remaining:,}")
+        console.print(
+            f"  Total: {len(candidates):,} | "
+            f"Done: {len(candidates) - len(remaining_list):,} | "
+            f"Remaining: {len(remaining_list):,}"
+        )
         console.print(f"  Batches: {batches_needed:,} (batch size {batch_size})")
         est_minutes = batches_needed * 10 / 60  # ~10s per batch estimate
         console.print(f"  Estimated time: ~{est_minutes:.0f} minutes")
@@ -490,7 +537,7 @@ def validate_all(
         if dry_run:
             continue
 
-        validate_model(model_name, model_tag, candidates, data_dir, batch_size, backup_every)
+        validate_model(model_name, model_tag, candidates, data_dir, batch_size, backup_every, order)
 
 
 def load_candidates(candidates_path: Path) -> list[dict]:

@@ -23,7 +23,7 @@ MODELS = ['haiku', 'sonnet', 'opus', 'gpt', 'gemini', 'gemma', 'llama', 'jais']
 # columns are filled by validate_ollama or imports. SINGLE_TOKEN_WORD? was
 # removed 2026-07: it is a tokenizer property computed deterministically in
 # tokenizer_analysis.jsonl, and asking an LLM for it produced garbage.
-CANDIDATE_HEADERS = ['ROOT', 'ROOT_TYPE', 'ARITY', 'PATTERN', 'VERB']
+CANDIDATE_HEADERS = ['ROOT', 'ROOT_TYPE', 'ARITY', 'PATTERN', 'WEAK_CLASS', 'PLAUSIBILITY', 'VERB']
 VALIDATION_HEADERS = [
     'EXISTS?',
     'DIALECT_ONLY?',
@@ -44,11 +44,19 @@ def candidate_key(record: dict) -> tuple[str, str]:
     return (record['root'], record['pattern'])
 
 
+def candidate_cells(c: dict) -> list:
+    """Identity cells for one candidate, in CANDIDATE_HEADERS order."""
+    return [
+        c['root'], c['root_type'], c['arity'], c['pattern'],
+        c.get('weak_class') or '',
+        c.get('plausibility') if c.get('plausibility') is not None else '',
+        c['verb'],
+    ]
+
+
 def candidate_row(c: dict) -> list:
     """CSV cells for one candidate, validation columns empty."""
-    cells = [c['root'], c['root_type'], c['arity'], c['pattern'], c['verb']]
-    cells.extend([''] * len(VALIDATION_HEADERS))
-    return cells
+    return candidate_cells(c) + [''] * len(VALIDATION_HEADERS)
 
 
 def load_candidates(candidates_path: Path) -> list[dict]:
@@ -116,10 +124,12 @@ def backup_csv(csv_path: Path, tag: str = '', keep: int = 0) -> Path:
     shutil.copy2(csv_path, dest)
 
     if keep > 0:
-        pattern = f'{csv_path.stem}.{tag}-*.csv' if tag else f'{csv_path.stem}.*.csv'
+        # Untagged pattern must not swallow tagged snapshots (premerge/run/…):
+        # timestamps start with a digit, tags never do.
+        pattern = f'{csv_path.stem}.{tag}-*.csv' if tag else f'{csv_path.stem}.[0-9]*.csv'
         siblings = sorted(backup_dir.glob(pattern))  # timestamp suffix sorts lexicographically
-        for stale in siblings[:-keep]:
-            stale.unlink()
+        for old_backup in siblings[:-keep]:
+            old_backup.unlink()
 
     return dest
 
@@ -129,69 +139,79 @@ def scaffold_matches(csv_path: Path, candidates: list[dict]) -> bool:
     exact candidate identity rows (so rewriting it would be a no-op)."""
     if read_header(csv_path) != CSV_HEADERS:
         return False
-    expected = [
-        (c['root'], c['root_type'], str(c['arity']), c['pattern'], c['verb'])
-        for c in candidates
-    ]
+    expected = [[str(cell) for cell in candidate_cells(c)] for c in candidates]
     with open(csv_path, 'r', encoding='utf-8', newline='') as f:
         reader = csv.DictReader(f)
-        actual = [
-            (row['ROOT'], row['ROOT_TYPE'], row['ARITY'], row['PATTERN'], row['VERB'])
-            for row in reader
-        ]
+        actual = [[row[h] for h in CANDIDATE_HEADERS] for row in reader]
     return actual == expected
 
 
-def merge_csv(csv_path: Path, candidates: list[dict]) -> tuple[int, int, int]:
+def merge_csv(csv_path: Path, candidates: list[dict]) -> tuple[int, int, int, int]:
     """Rebuild a CSV in canonical candidate order, carrying validation
     columns from the existing file by (ROOT, PATTERN).
 
-    Backs the existing file up first. Returns (carried, added, dropped):
-    carried = filled rows preserved, added = candidates with no prior row,
-    dropped = filled rows whose key no longer exists in candidates.
+    A verdict is about the SURFACE the validator saw: when a candidate's
+    VERB string changed since the old row was filled (e.g. the weak-radical
+    fix turned خَيَطَ into خَاطَ), the old validation cells are NOT carried —
+    the row reverts to unvalidated and the run resumes it.
+
+    Backs the existing file up first. Returns (carried, added, dropped,
+    stale): carried = validated rows preserved, added = keys with no prior
+    row at all, dropped = validated rows whose key no longer exists,
+    stale = validated rows discarded because their surface changed.
     """
     backup = backup_csv(csv_path, tag='premerge')
     print(f"  backup → {backup}", file=sys.stderr)
 
+    old_keys: set[tuple[str, str]] = set()
     old_validation: dict[tuple[str, str], dict] = {}
-    old_filled: set[tuple[str, str]] = set()
+    old_verbs: dict[tuple[str, str], str] = {}
     with open(csv_path, 'r', encoding='utf-8', newline='') as f:
         reader = csv.DictReader(f)
         for row in reader:
             key = candidate_key(row)
+            old_keys.add(key)
             values = {h: (row.get(h) or '') for h in VALIDATION_HEADERS}
             if any(v.strip() for v in values.values()):
                 old_validation[key] = values
-                if (row.get('EXISTS?') or '').strip():
-                    old_filled.add(key)
+                old_verbs[key] = row.get('VERB') or ''
 
     carried = 0
     added = 0
+    stale = 0
     rows = []
     seen_keys = set()
     for c in candidates:
         key = candidate_key(c)
         seen_keys.add(key)
-        cells = [c['root'], c['root_type'], c['arity'], c['pattern'], c['verb']]
-        if key in old_validation:
+        cells = candidate_cells(c)
+        if key in old_validation and old_verbs.get(key) == c['verb']:
             cells.extend(old_validation[key][h] for h in VALIDATION_HEADERS)
-            if key in old_filled:
-                carried += 1
+            carried += 1
         else:
+            if key in old_validation:
+                stale += 1
             cells.extend([''] * len(VALIDATION_HEADERS))
+        if key not in old_keys:
             added += 1
         rows.append(cells)
 
-    dropped = len(old_filled - seen_keys)
+    if stale:
+        print(
+            f"  NOTE: {stale} validated rows discarded — their VERB surface "
+            f"changed, so the old verdict no longer applies (preserved in {backup})",
+            file=sys.stderr,
+        )
+    dropped = len(set(old_validation) - seen_keys)
     if dropped:
         print(
-            f"  WARNING: {dropped} filled rows have no matching candidate "
-            f"and were dropped (preserved in {backup})",
+            f"  WARNING: {dropped} rows with validation data have no matching "
+            f"candidate and were dropped (preserved in {backup})",
             file=sys.stderr,
         )
 
     _atomic_write(csv_path, rows)
-    return carried, added, dropped
+    return carried, added, dropped, stale
 
 
 def generate_csvs(
@@ -222,9 +242,10 @@ def generate_csvs(
         filled = count_filled_rows(csv_path)
 
         if merge:
-            carried, added, dropped = merge_csv(csv_path, candidates)
+            carried, added, dropped, stale = merge_csv(csv_path, candidates)
             print(
-                f"  {csv_path} merged (carried {carried}, added {added}, dropped {dropped})",
+                f"  {csv_path} merged (carried {carried}, added {added}, "
+                f"dropped {dropped}, stale {stale})",
                 file=sys.stderr,
             )
         elif filled > 0:

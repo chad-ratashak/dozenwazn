@@ -141,6 +141,19 @@ def check_ollama_health() -> bool:
         return False
 
 
+def check_model_exists(model_tag: str, client: httpx.Client) -> bool:
+    """True if the tag is installed on the Ollama server.
+
+    A missing tag makes /api/chat return 404 for every request — without
+    this preflight that surfaces as a mysterious 100% missing-rate.
+    """
+    try:
+        resp = client.post("/api/show", json={"name": model_tag})
+        return resp.status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
 def pull_model(model_tag: str) -> bool:
     """Pull an Ollama model, showing progress."""
     console.print(f"  Pulling [bold]{model_tag}[/bold]...")
@@ -641,6 +654,13 @@ def validate_model(
         base_url=OLLAMA_BASE,
         timeout=httpx.Timeout(connect=10.0, read=300.0, write=10.0, pool=10.0),
     )
+    if not check_model_exists(model_tag, client):
+        client.close()
+        console.print(
+            f"  [red]Model tag '{model_tag}' is not installed on the Ollama "
+            f"server — check `ollama list`, or run with --pull.[/red]"
+        )
+        return
     store = RowStore(csv_path)
     stats = RunStats()
     by_verb = {c["verb"]: c for c in remaining}

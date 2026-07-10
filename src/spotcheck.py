@@ -124,6 +124,14 @@ def run_spotcheck(
         base_url=OLLAMA_BASE,
         timeout=httpx.Timeout(connect=10.0, read=300.0, write=10.0, pool=10.0),
     )
+    from src.validate_ollama import check_model_exists
+    if not check_model_exists(model_tag, client):
+        client.close()
+        console.print(
+            f"  [red]NO-GO: model tag '{model_tag}' is not installed on the "
+            f"Ollama server — check `ollama list`.[/red]"
+        )
+        return False
     use_schema = probe_schema_support(model_tag, client, logger)
 
     predictions: dict[str, bool | None] = {}

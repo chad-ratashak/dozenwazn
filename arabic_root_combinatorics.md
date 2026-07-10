@@ -84,13 +84,37 @@ XYZN quadrilateral roots (491,400) are deferred — available via `--include-xyz
 
 ## Tokenizer Analysis
 
-Single-token recognition rates for bare (no tashkeel) verb forms:
+Single-token recognition rates for bare (no tashkeel) verb forms, measured
+on the **corrected surface forms** (weak-radical morphophonology applied —
+hollow قول is measured as قال, not the naive قَوَلَ). Regenerate this table with
+`uv run python -m src.cli analyze tokenizers --markdown`.
 
-| Tokenizer | Single-token hits | % of 64,260 |
-|-----------|-------------------|-------------|
-| JAIS-13B (Arabic-optimized) | 5,587 | 8.7% |
-| o200k_base (GPT-4o/o1) | 2,209 | 3.4% |
-| cl100k_base (GPT-4) | 30 | 0.0% |
-| **Any tokenizer** | **5,725** | **8.9%** |
+| Tokenizer | Single-token (bare) | % of n [95% CI] | Fertility | Notes |
+|---|---|---|---|---|
+| arabert | 16,836/64,260 | 26.20% (95% CI 25.86%–26.54%) | 1.84 | normalizer strips tashkeel (diacriticized hits equal bare hits) |
+| aya101 | 1,772/64,260 | 2.76% (95% CI 2.63%–2.89%) | 2.47 | mT5 SentencePiece (Aya-101 uses it unmodified) |
+| camelbert | 8,450/64,260 | 13.15% (95% CI 12.89%–13.41%) | 2.04 | WordPiece; lone-[UNK] counted as null, never a hit |
+| cl100k_base | 24/64,260 | 0.04% (95% CI 0.03%–0.06%) | 2.98 | GPT-4 |
+| jais | 6,116/64,260 | 9.52% (95% CI 9.29%–9.75%) | 2.08 | Arabic-optimized |
+| o200k_base | 2,740/64,260 | 4.26% (95% CI 4.11%–4.42%) | 2.29 | GPT-4o/o1 |
+| qwen2.5 | 2,969/64,260 | 4.62% (95% CI 4.46%–4.79%) | 2.25 | vocabulary only, see CLAUDE.md data scope |
+| **any tokenizer** | **18,785/64,260** | **29.23% (95% CI 28.88%–29.59%)** | — | — |
 
-**Key finding:** Zero diacriticized forms are single tokens in any tokenizer. Arabic tashkeel is never part of BPE vocabularies — each diacritical mark becomes its own token.
+Fertility = mean tokens per verb on bare forms (lower is better coverage).
+
+**Weak-radical effect:** switching from the naive CaCaCa template to correct
+surfaces raised any-tokenizer coverage from 24.0% to 29.2% — hollow verbs are
+72.6% single-token and geminates 79.6% (their contracted bare surfaces like
+قال/مد are common short words), versus 20.9% for sound roots.
+
+**Validated-real coverage (the headline):** of consensus-real verbs
+(dictionary gold + LLM votes), **72.6% are single tokens in at least one
+tokenizer** (6,255/8,611, 95% CI 71.7%–73.6%) — versus 29.2% over all
+candidates. Regenerate with `analyze coverage`.
+
+**Diacriticized forms:** the earlier "zero diacriticized single-tokens"
+finding holds **only for tokenizers whose normalizer preserves tashkeel**
+(0/64,260 across aya101, camelbert, cl100k_base, jais, o200k_base, qwen2.5).
+AraBERT's built-in normalizer strips diacritics, so its 16,836 "diacriticized"
+hits are bare-form hits in disguise and say nothing about tashkeel-bearing
+text.

@@ -17,7 +17,21 @@ from pathlib import Path
 from src.stats import cohen_kappa, fleiss_kappa, fmt_rate
 
 MODEL_NAMES = ("haiku", "sonnet", "opus", "gpt", "gemini", "gemma", "llama", "jais")
-TOKENIZER_NAMES = ("cl100k_base", "o200k_base", "arabert", "camelbert", "jais", "qwen2.5")
+# Fallback when tokenizer_analysis.jsonl is absent; at runtime the panel is
+# detected from the data so newly vendored tokenizers appear automatically.
+_TOKENIZER_NAMES_FALLBACK = ("cl100k_base", "o200k_base", "arabert", "camelbert", "jais", "qwen2.5")
+TOKENIZER_NAMES = _TOKENIZER_NAMES_FALLBACK
+
+
+def detect_tokenizer_names(data_dir):
+    """Tokenizer panel as recorded in the first tokenizer_analysis record."""
+    path = Path(data_dir) / "tokenizer_analysis.jsonl"
+    try:
+        with open(path, encoding="utf-8") as f:
+            first = json.loads(f.readline())
+        return tuple(sorted(first["tokens_bare"].keys()))
+    except (OSError, ValueError, KeyError):
+        return _TOKENIZER_NAMES_FALLBACK
 
 GOLD_REAL_LABELS = frozenset({"attested_dictionary", "root_attested_form1"})
 GOLD_NOT_REAL_LABELS = frozenset({"unattested"})
@@ -336,6 +350,7 @@ def run_coverage(data_dir, echo=print):
     Works with gold alone when no model CSVs are populated. Writes
     data/analysis/coverage.json and ghosts.jsonl. Returns the summary dict.
     """
+    TOKENIZER_NAMES = detect_tokenizer_names(data_dir)  # data-driven panel
     data_dir = Path(data_dir)
     out_dir = _analysis_dir(data_dir)
     votes_by_model = load_model_votes(data_dir)
@@ -444,6 +459,7 @@ def run_neologisms(data_dir, include_unverified=False, tokenizer=None, top=50,
 
     Writes data/analysis/neologisms.jsonl; returns the ranked row list.
     """
+    TOKENIZER_NAMES = detect_tokenizer_names(data_dir)  # data-driven panel
     if tokenizer and tokenizer not in TOKENIZER_NAMES:
         raise ValueError(f"unknown tokenizer {tokenizer!r} "
                          f"(choose from {', '.join(TOKENIZER_NAMES)})")
@@ -527,6 +543,7 @@ def run_tokenizers(data_dir, markdown=False, echo=print):
 
     Writes data/analysis/tokenizers.json; returns the summary dict.
     """
+    TOKENIZER_NAMES = detect_tokenizer_names(data_dir)  # data-driven panel
     data_dir = Path(data_dir)
     out_dir = _analysis_dir(data_dir)
     stats = {t: {"bare_k": 0, "bare_n": 0, "diac_k": 0, "diac_n": 0,

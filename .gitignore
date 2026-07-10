@@ -19,3 +19,8 @@ data/
 # integrity-checked against the committed SHA256SUMS.json manifest
 vendor/tokenizers/*
 !vendor/tokenizers/SHA256SUMS.json
+
+# Vendored lexicon data files — re-fetchable via `python -m src.cli lexica`,
+# same integrity model as tokenizers
+vendor/lexica/*
+!vendor/lexica/SHA256SUMS.json

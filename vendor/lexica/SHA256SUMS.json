@@ -1,0 +1,38 @@
+{
+  "arramooz": {
+    "fetched": "2026-07-10",
+    "files": {
+      "LICENSE": "db296f2f7f35bca3a174efb0eb392b3b17bd94b341851429a3dff411b1c2fc73",
+      "verb_dic_data-net.csv": "e54cb3fe3992e45344dba34058e08a67fe61fce4d1d06b447dd0e5971cfbd970",
+      "verb_triliteral.csv": "2c9aa2a47a1fc27c5791e945ee12424f4bda412ee5873b9854d2c7056a57a2d5"
+    },
+    "pinned": true,
+    "urls": {
+      "LICENSE": "https://raw.githubusercontent.com/linuxscout/arramooz/b055c5dea51b8a9152e7e66a7ca3b6f713fb187d/LICENSE",
+      "verb_dic_data-net.csv": "https://raw.githubusercontent.com/linuxscout/arramooz/b055c5dea51b8a9152e7e66a7ca3b6f713fb187d/data/verbs/verb_dic_data-net.csv",
+      "verb_triliteral.csv": "https://raw.githubusercontent.com/linuxscout/arramooz/b055c5dea51b8a9152e7e66a7ca3b6f713fb187d/data/verbs/verb_triliteral.csv"
+    }
+  },
+  "freq_opensubtitles": {
+    "fetched": "2026-07-10",
+    "files": {
+      "LICENSE": "e08d916cc953f85f7dfa0df530f6d7931f14ce804d053602662d8649b5fac829",
+      "ar_full.txt": "ebb36aeae78e609adc552b32ec91ff2490e1170f8b244d22eef9952d2096d610"
+    },
+    "pinned": true,
+    "urls": {
+      "LICENSE": "https://raw.githubusercontent.com/hermitdave/FrequencyWords/525f9b560de45753a5ea01069454e72e9aa541c6/LICENSE",
+      "ar_full.txt": "https://raw.githubusercontent.com/hermitdave/FrequencyWords/525f9b560de45753a5ea01069454e72e9aa541c6/content/2018/ar/ar_full.txt"
+    }
+  },
+  "wiktionary_ar": {
+    "fetched": "2026-07-10",
+    "files": {
+      "kaikki.org-dictionary-Arabic.jsonl.gz": "79e2cd30a1afe61709e99b6990d644c6839671af4cd5715b2c4008f600a521e4"
+    },
+    "pinned": false,
+    "urls": {
+      "kaikki.org-dictionary-Arabic.jsonl.gz": "https://kaikki.org/dictionary/Arabic/kaikki.org-dictionary-Arabic.jsonl.gz"
+    }
+  }
+}

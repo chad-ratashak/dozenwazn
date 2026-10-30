@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Hand-verified seed sets for the LLM spot-check gate.
 
 Fallback only: once data/gold.csv exists, spotcheck samples from it instead

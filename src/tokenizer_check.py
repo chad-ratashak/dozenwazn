@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Check if generated verbs are single tokens across multiple tokenizers.
 
 Tests both diacriticized (with tashkeel) and bare consonantal forms.

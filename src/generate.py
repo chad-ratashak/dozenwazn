@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """
 Generate every mathematically possible Arabic Form I verb from all valid
 trilateral and quadrilateral root combinations.

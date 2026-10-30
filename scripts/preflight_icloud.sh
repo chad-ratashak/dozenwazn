@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # iCloud preflight — DO NOT REMOVE. This folder is iCloud-synced; "Optimize Mac
 # Storage" evicts file contents ("dataless" files), and any long process then
 # blocks for MINUTES on first-touch reads while it looks like a hang.

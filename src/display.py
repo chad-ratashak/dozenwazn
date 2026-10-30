@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Visual display of dozenwazn candidates and validation results.
 
 Two output modes:

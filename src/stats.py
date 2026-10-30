@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Shared statistics helpers.
 
 Project rigor rule: no rate is ever reported without its raw n and a 95%

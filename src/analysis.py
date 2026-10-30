@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Cross-model agreement, consensus, coverage, and neologism analysis.
 
 Loader contract (display.py will import these later — keep names exact):

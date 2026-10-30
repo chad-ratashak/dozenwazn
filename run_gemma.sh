@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Run (or resume) gemma validation of all 64,260 candidates
 cd "$(dirname "$0")"
 

@@ -23,3 +23,9 @@ vendor/tokenizers/*
 # same integrity model as tokenizers
 vendor/lexica/*
 !vendor/lexica/SHA256SUMS.json
+
+# vendor/_fallback/ is deliberately TRACKED — committed last-resort copies used
+# only when the network fetch fails (see src/vendor_lexica.py). Do not add a
+# blanket vendor/* ignore rule, and do not add CC BY-SA sources here; only
+# redistributable ones belong (NOTICE-DATA.md).
+!vendor/_fallback/

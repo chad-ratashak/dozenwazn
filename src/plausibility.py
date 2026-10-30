@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Phonotactic plausibility scoring for Arabic root candidates (OCP-Place).
 
 Arabic roots strongly avoid homorganic consonant pairs, gradient by

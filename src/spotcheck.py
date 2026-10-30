@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Spot-check accuracy gate for LLM validation — the go/no-go before any
 multi-hour run.
 

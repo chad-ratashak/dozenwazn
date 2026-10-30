@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Import validation data from a filled xlsx workbook into a model CSV.
 
 Built for data/haiku_filled.xlsx (2026-04-06): the only surviving Haiku

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Shared helpers for vendored-asset manifests (tokenizers, lexica).
 
 Every vendored data file is hashed into a committed SHA256SUMS.json; loaders

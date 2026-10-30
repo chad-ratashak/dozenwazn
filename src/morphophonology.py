@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Arabic Form I past-3ms surface morphophonology.
 
 The generator's original naive template concatenated radicals directly

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Gold-table acceptance tests for Form I past-3ms surface generation.
 
 Every expected surface below is an attested MSA/classical verb copied from

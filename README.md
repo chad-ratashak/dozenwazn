@@ -57,6 +57,10 @@ Tokenizers and lexica are studied as **inert data files only** — no
 modules allowed to fetch are `vendor_tokenizers.py`/`vendor_lexica.py`
 (extension allowlists, commit-pinned where upstream allows); every file's
 SHA-256 lives in a committed manifest and is verified before every load.
+`vendor/_fallback/arramooz/` is the one committed data copy — a last resort
+used only when the fetch fails, and only after it verifies against that same
+manifest.
+
 Details and the tokenizer data scope: [CLAUDE.md](CLAUDE.md).
 
 ## LLM validation status
@@ -102,13 +106,39 @@ model — revisit only if a first-party GGUF appears.
 `data/` is gitignored (regenerable); the two `SHA256SUMS.json` manifests are
 committed.
 
-## Lexicon licenses / attribution
+## License
 
-- **Arramooz AlWaseet** (Taha Zerrouki) — GPL-2. Verb tables used for
-  (root, pattern) attestation.
+Copyright (C) 2026 Chad Ratashak
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with
+this program. If not, see <https://www.gnu.org/licenses/>.
+
+`SPDX-License-Identifier: GPL-3.0-or-later`
+
+### Third-party data
+
+Lexicon and tokenizer data is licensed separately by its own authors and is
+fetched, not committed — with one deliberate exception, the Arramooz fallback
+copy. Sources, licenses, and attribution: [NOTICE-DATA.md](NOTICE-DATA.md).
+
+- **Arramooz AlWaseet** (Taha Zerrouki) — GPL-2.0-or-later. Verb tables used
+  for (root, pattern) attestation. A byte-identical fallback copy is committed
+  at `vendor/_fallback/arramooz/`.
 - **Wiktionary** Arabic extract via [kaikki.org](https://kaikki.org)
-  (wiktextract) — CC BY-SA / GFDL.
-- **FrequencyWords** (OpenSubtitles 2018, hermitdave) — MIT.
+  (wiktextract) — CC BY-SA / GFDL. Fetch-only; not redistributed.
+- **FrequencyWords** (OpenSubtitles 2018, hermitdave) — MIT. Fetch-only.
 
-Any future dataset publication must resolve a combined license first
-(GPL-2-derived flags + CC BY-SA content).
+The repository license covers this project's code and documentation. It does
+**not** settle the license of the generated dataset — `data/gold.csv` and
+`data/dozenwazn.html` carry verbatim Wiktionary glosses, which is a separate
+decision to make before publishing either. Scope and options:
+[docs/gold-gloss-scope.md](docs/gold-gloss-scope.md).

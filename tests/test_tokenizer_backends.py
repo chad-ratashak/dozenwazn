@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Backend tests for VendoredTokenizer (tokenizer.json / vocab.txt / .model).
 
 All tests skip cleanly when the relevant tokenizer isn't vendored yet

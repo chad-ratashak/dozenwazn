@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for src/analysis.py — consensus, parsers, loaders, agreement."""
 
 import csv

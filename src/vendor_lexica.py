@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Vendor dictionary/corpus lexicon data into vendor/lexica/.
 
 Mirrors the vendor_tokenizers security pattern: this is the ONLY module
@@ -9,8 +10,9 @@ verified on every load.
 Sources (all within the model-origin allowlist; licenses noted for attribution and any
 future dataset publication):
   - arramooz  — Arramooz AlWaseet Arabic dictionary (Taha Zerrouki, Algeria),
-    GPL-2. verb_triliteral.csv: vocalized Form I past + root + bāb number,
-    which encodes the past middle vowel directly. Pinned to a commit SHA.
+    GPL-2.0-or-later. verb_triliteral.csv: vocalized Form I past + root +
+    bāb number, which encodes the past middle vowel directly. Pinned to a
+    commit SHA, with a committed fallback copy (see FALLBACK_DIR).
   - wiktionary_ar — English Wiktionary Arabic extract via kaikki.org
     (wiktextract), CC BY-SA + GFDL. Rebuilt upstream continuously, so no
     commit pinning exists: trust-on-first-use — the hash and fetch date are
@@ -18,18 +20,37 @@ future dataset publication):
   - freq_opensubtitles — OpenSubtitles 2018 Arabic frequency list from
     hermitdave/FrequencyWords, MIT. Pinned to a commit SHA. The repo LICENSE
     is vendored alongside for attribution.
+
+Per-source licences and attribution: NOTICE-DATA.md.
 """
 
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
 
 import httpx
 
-from src.vendor_common import load_manifest, save_manifest, sha256_file
+from src.vendor_common import (
+    load_manifest,
+    save_manifest,
+    sha256_file,
+    verify_files,
+)
 
 VENDOR_DIR = Path('vendor/lexica')
 MANIFEST_PATH = VENDOR_DIR / 'SHA256SUMS.json'
+
+# In-repo last-resort copies, used only when the network fetch fails. Unlike
+# vendor/lexica/, these ARE committed — upstream can vanish or force-push and
+# the pinned raw URLs stop resolving. They are never trusted on their own: a
+# restored copy is verified against the committed manifest before it counts,
+# so the fallback cannot be used to smuggle in different data.
+#
+# Only redistributable sources belong here. arramooz is GPL-2.0-or-later
+# (see NOTICE-DATA.md). The Wiktionary/kaikki extract must NOT be added: it
+# is CC BY-SA, and committing it would mix that into this GPL-3 tree.
+FALLBACK_DIR = Path('vendor/_fallback')
 
 ALLOWED_EXTENSIONS = {'.csv', '.xml', '.txt', '.json', '.jsonl', '.gz', '.sql', ''}
 
@@ -46,7 +67,7 @@ LEXICA_REGISTRY = {
             'LICENSE':
                 f'https://raw.githubusercontent.com/linuxscout/arramooz/{_ARRAMOOZ_COMMIT}/LICENSE',
         },
-        'label': 'Arramooz AlWaseet (GPL-2, commit-pinned)',
+        'label': 'Arramooz AlWaseet (GPL-2.0-or-later, commit-pinned + fallback)',
         'pinned': True,
     },
     'wiktionary_ar': {
@@ -82,6 +103,30 @@ def _is_vendored_and_valid(name: str, spec: dict, manifest: dict) -> bool:
     return True
 
 
+def _restore_from_fallback(name: str, spec: dict, dest_dir: Path,
+                           manifest: dict) -> bool:
+    """Copy the committed fallback into vendor/lexica/<name>/ after a failed fetch.
+
+    The copy is only accepted if it matches the hashes already recorded in the
+    committed manifest, so this cannot become a way to introduce data that the
+    manifest never blessed. Returns False when no complete fallback exists (or
+    no manifest entry to check it against); raises via verify_files if a
+    fallback file is present but wrong.
+    """
+    src_dir = FALLBACK_DIR / name
+    recorded = (manifest.get(name) or {}).get('files')
+    if not src_dir.is_dir() or not recorded:
+        return False
+    if any(not (src_dir / fname).exists() for fname in spec['urls']):
+        return False
+
+    for fname in spec['urls']:
+        shutil.copyfile(src_dir / fname, dest_dir / fname)
+    verify_files(name, dest_dir, {k: v for k, v in recorded.items()
+                                  if k in spec['urls']})
+    return True
+
+
 def vendor_one(name: str, spec: dict, manifest: dict, refresh: bool = False) -> bool:
     if not refresh and _is_vendored_and_valid(name, spec, manifest):
         print(f"  {name}: already vendored and verified — skipping", file=sys.stderr)
@@ -112,7 +157,16 @@ def vendor_one(name: str, spec: dict, manifest: dict, refresh: bool = False) -> 
                     tmp.rename(dest)
                 files[fname] = sha256_file(dest)
     except httpx.HTTPError as e:
-        print(f"  {name}: FAILED — {e}", file=sys.stderr)
+        print(f"  {name}: fetch FAILED — {e}", file=sys.stderr)
+        if _restore_from_fallback(name, spec, dest_dir, manifest):
+            print(
+                f"  {name}: restored from the committed fallback copy "
+                f"({FALLBACK_DIR / name}/) and verified against the manifest — "
+                f"upstream is unreachable but the data is byte-identical.",
+                file=sys.stderr,
+            )
+            return True
+        print(f"  {name}: no usable fallback copy — giving up", file=sys.stderr)
         return False
 
     old = manifest.get(name)

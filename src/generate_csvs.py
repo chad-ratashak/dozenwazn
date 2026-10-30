@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Generate per-model CSV templates pre-populated with all verb candidates.
 
 Safety model: a CSV that contains filled validation rows is never silently

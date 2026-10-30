@@ -14,6 +14,15 @@ wheels/
 data/
 .DS_Store
 
+# Machine-specific files — local only, never part of the public tree
+*.command
+.claude/launch.json
+.claude/settings.local*
+CLAUDE.local.md
+.env
+.env.*
+* 2.*
+
 # Vendored tokenizer data files — re-fetchable via `python -m src.cli vendor`,
 # integrity-checked against the committed SHA256SUMS.json manifest
 vendor/tokenizers/*

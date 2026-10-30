@@ -47,8 +47,9 @@ generate → csvs → vendor / lexica → tokenize → gold → spotcheck → va
 | `analyze agreement/coverage/neologisms/tokenizers` | Research outputs → `data/analysis/` |
 | `display` / `html` | Terminal stats + interactive canvas → `data/dozenwazn.html` |
 
-Quick start: `uv sync`, then `/launch` (Claude Code) or double-click
-`Launch Dozenwazn.command`.
+Quick start: `uv sync`, then run the commands above in order (or `/launch`
+in Claude Code). `uv run python serve.py` serves the map at
+`http://localhost:8742/dozenwazn.html`.
 
 ## Security model
 
@@ -86,7 +87,7 @@ model — revisit only if a first-party GGUF appears.
 1. `uv run python -m src.cli spotcheck -m <model>` → needs GO.
 2. `uv run python -m src.cli bench -m <model>` → pick `--batch-size`/`--parallel`.
 3. If parallel > 1: restart the server with `OLLAMA_NUM_PARALLEL=<n> ollama serve`.
-4. `./run_gemma.sh` (or `Run Gemma.command`). Ctrl+C pauses; re-run resumes
+4. `./run_gemma.sh` (or `./run_llama.sh`). Ctrl+C pauses; re-run resumes
    (progress is keyed by (ROOT, PATTERN); snapshots land in `data/backups/`
    every 50 batches).
 5. After ≥1 model CSV fills: `analyze agreement` / `analyze coverage`.

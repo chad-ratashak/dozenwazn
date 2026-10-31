@@ -96,8 +96,8 @@ repository's licensing simple.
 Form I canonical verb surfaces and their first gloss are extracted and
 normalized (`src/gold.py`). Glosses appear verbatim in the generated
 `data/gold.csv` and in `data/dozenwazn.html`. Neither is committed — `data/` is
-gitignored — but both are publication artifacts, so see
-`docs/gold-gloss-scope.md` before publishing either.
+gitignored — but both are publication artifacts: neither can be published
+as-is without dropping the glosses or taking on CC BY-SA terms for them.
 
 ---
 
@@ -127,9 +127,8 @@ This matters more here than for the lexica. Several of these tokenizers ship
 under non-OSI model licences — the Llama Community License and the Gemma Terms
 of Use among them — which restrict redistribution of model artifacts in ways
 that are not compatible with simply committing a vocab file to a GPL-3
-repository. `TODO.md` has an open item to vendor the Llama 3 and Gemma 2
-tokenizers once the upstream licences are accepted; **commit the manifest
-only, never the vocabulary files.**
+repository. The Llama 3 and Gemma 2 tokenizers are not vendored yet (their
+upstream licences must be accepted first); when they are, **commit the
+manifest only, never the vocabulary files.**
 
-See `CLAUDE.md` for the tokenizer security model and the tokenizer data
-scope.
+See `README.md` for the tokenizer security model and the Qwen data scope.

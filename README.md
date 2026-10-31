@@ -47,8 +47,8 @@ generate → csvs → vendor / lexica → tokenize → gold → spotcheck → va
 | `analyze agreement/coverage/neologisms/tokenizers` | Research outputs → `data/analysis/` |
 | `display` / `html` | Terminal stats + interactive canvas → `data/dozenwazn.html` |
 
-Quick start: `uv sync`, then run the commands above in order (or `/launch`
-in Claude Code). `uv run python serve.py` serves the map at
+Quick start: `uv sync`, then run the commands above in order.
+`uv run python serve.py` serves the map at
 `http://localhost:8742/dozenwazn.html`.
 
 ## Security model
@@ -62,7 +62,11 @@ SHA-256 lives in a committed manifest and is verified before every load.
 used only when the fetch fails, and only after it verifies against that same
 manifest.
 
-Details and the tokenizer data scope: [CLAUDE.md](CLAUDE.md).
+Qwen 2.5 is included as vocabulary data only: its `tokenizer.json` is vendored
+and checksummed like the others, and no Qwen weights are downloaded, no
+inference is run and no code from its repository is executed. Running it as
+part of a model is excluded under the project's model-origin rule (vendors
+outside the US/allied allowlist).
 
 ## LLM validation status
 
@@ -141,5 +145,4 @@ copy. Sources, licenses, and attribution: [NOTICE-DATA.md](NOTICE-DATA.md).
 The repository license covers this project's code and documentation. It does
 **not** settle the license of the generated dataset — `data/gold.csv` and
 `data/dozenwazn.html` carry verbatim Wiktionary glosses, which is a separate
-decision to make before publishing either. Scope and options:
-[docs/gold-gloss-scope.md](docs/gold-gloss-scope.md).
+decision to make before publishing either.

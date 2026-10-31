@@ -97,7 +97,7 @@ hollow قول is measured as قال, not the naive قَوَلَ). Regenerate thi
 | cl100k_base | 24/64,260 | 0.04% (95% CI 0.03%–0.06%) | 2.98 | GPT-4 |
 | jais | 6,116/64,260 | 9.52% (95% CI 9.29%–9.75%) | 2.08 | Arabic-optimized |
 | o200k_base | 2,740/64,260 | 4.26% (95% CI 4.11%–4.42%) | 2.29 | GPT-4o/o1 |
-| qwen2.5 | 2,969/64,260 | 4.62% (95% CI 4.46%–4.79%) | 2.25 | vocabulary only, see CLAUDE.md data scope |
+| qwen2.5 | 2,969/64,260 | 4.62% (95% CI 4.46%–4.79%) | 2.25 | vocabulary only; see README security model |
 | **any tokenizer** | **18,785/64,260** | **29.23% (95% CI 28.88%–29.59%)** | — | — |
 
 Fertility = mean tokens per verb on bare forms (lower is better coverage).

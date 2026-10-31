@@ -32,7 +32,7 @@ ALLOWED_EXTENSIONS = {'.json', '.txt', '.model'}
 
 # name → spec. `files` lists the data files needed to *count tokens*; nothing
 # else is fetched. Qwen is vocabulary-only research data — see the
-# "Tokenizer Data Scope" section in this project's CLAUDE.md.
+# "Security model" section of README.md.
 TOKENIZER_REGISTRY = {
     'jais': {
         'repo': 'inceptionai/jais-13b',
@@ -43,7 +43,7 @@ TOKENIZER_REGISTRY = {
     'qwen2.5': {
         'repo': 'Qwen/Qwen2.5-7B',
         'files': ['tokenizer.json'],
-        'label': 'Qwen 2.5 (vocabulary only — see CLAUDE.md data scope)',
+        'label': 'Qwen 2.5 (vocabulary only)',
         'gated': False,
     },
     # Gated pair (Llama 3 / Gemma 2) — how to vendor them:

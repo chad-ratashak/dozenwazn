@@ -14,11 +14,15 @@ wheels/
 data/
 .DS_Store
 
-# Machine-specific files — local only, never part of the public tree
+# Local-only files — machine-specific settings, agent instructions and
+# planning notes. Never part of the public tree.
 *.command
-.claude/launch.json
-.claude/settings.local*
+.claude/
+CLAUDE.md
 CLAUDE.local.md
+TODO*.md
+ROADMAP*.md
+docs/gold-gloss-scope.md
 .env
 .env.*
 * 2.*
